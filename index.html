@@ -97,6 +97,8 @@ input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
 .guide{position:absolute;top:8px;left:8px;right:8px;display:flex;flex-wrap:wrap;justify-content:center;gap:6px;pointer-events:none}
 .guide span{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0 12px;border-radius:17px;background:var(--scrim);border:1px solid var(--signal);font:500 14px var(--mono);letter-spacing:.02em;color:var(--paper)}
 .guide span i{font-style:normal;color:var(--signal);font-size:16px;line-height:1}
+.guide span.turn{border-style:dashed}
+.guide span.move{background:var(--raised)}
 .guide span.ok{background:var(--signal);color:var(--signal-ink);border-color:var(--signal)}
 .guide span.wait{border-color:var(--line);color:var(--muted)}
 .nocam .guide{display:none}
@@ -471,20 +473,20 @@ function gradMap(src,sx,sy,sw,sh,w,h){
   }
   return m;
 }
-function guideSearch(L,O,w,h){
+function guideSearch(L,O,w,h,ya,yb){
   const cx=(w-1)/2,cy=(h-1)/2;let best={sc:-1,s:1,dx:0,dy:0};
   for(let si=-6;si<=6;si++){
     const s=Math.pow(1.04,si),inv=1/s;
     for(let dy=-12;dy<=12;dy+=2)for(let dx=-16;dx<=16;dx+=2){
       let n=0,sa=0,sb=0,saa=0,sbb=0,sab=0;
-      for(let y=0;y<h;y++){
+      for(let y=ya;y<yb;y++){
         const oy=Math.round(cy+(y-cy-dy)*inv);if(oy<0||oy>=h)continue;
         for(let x=0;x<w;x++){
           const ox=Math.round(cx+(x-cx-dx)*inv);if(ox<0||ox>=w)continue;
           const a=L[y*w+x],b=O[oy*w+ox];n++;sa+=a;sb+=b;saa+=a*a;sbb+=b*b;sab+=a*b;
         }
       }
-      if(n<w*h*.45)continue;
+      if(n<w*(yb-ya)*.45)continue;
       const va=saa-sa*sa/n,vb=sbb-sb*sb/n;if(va<1e-6||vb<1e-6)continue;
       const sc=(sab-sa*sb/n)/Math.sqrt(va*vb);
       if(sc>best.sc)best={sc,s,dx,dy};
@@ -502,16 +504,25 @@ function guideTick(){
     const vw=v.videoWidth,vh=v.videoHeight;
     let cw,ch;if(vw/vh>ar){ch=vh;cw=vh*ar}else{cw=vw;ch=vw/ar}
     cw/=S.zoom;ch/=S.zoom;
-    const L=gradMap(v,(vw-cw)/2,(vh-ch)/2,cw,ch,w,h),r=guideSearch(L,guideOld,w,h);
-    // Zoom follows the measured scale. Old content looking s times bigger than it should
-    // means zoom out by s. What zoom cannot fix (limits 1x to 5x) is left as a step hint.
-    let ls=Math.log(r.s);
-    if(r.sc>=.12&&Math.abs(ls)>.02){
-      const before=S.zoom;
-      setZoom(before+(clamp(before/r.s,1,5)-before)*.6);
-      ls+=Math.log(S.zoom/before);
+    const L=gradMap(v,(vw-cw)/2,(vh-ch)/2,cw,ch,w,h);
+    // Far = upper 60% of the frame, near = lower 60%. A turn of the phone shifts both the same;
+    // a step sideways shifts the near part more than the far part (parallax), and standing too
+    // close or too far makes the near part look bigger or smaller than the far part.
+    const far=guideSearch(L,guideOld,w,h,0,Math.round(h*.6)),near=guideSearch(L,guideOld,w,h,Math.round(h*.4),h);
+    const farOk=far.sc>=.12,nearOk=near.sc>=.12,ref=farOk?far:(nearOk?near:null);
+    let m=null;
+    if(ref){
+      // Zoom follows the far scale; what zoom cannot fix (limits 1x to 5x) stays as a step hint.
+      let ls=Math.log(ref.s);
+      if(Math.abs(ls)>.02){
+        const before=S.zoom;
+        setZoom(before+(clamp(before/ref.s,1,5)-before)*.6);
+        ls+=Math.log(S.zoom/before);
+      }
+      m={turn:ref.dx,tilt:ref.dy,fb:ls,lat:0,both:farOk&&nearOk};
+      if(m.both){m.fb+=Math.log(near.s/far.s);m.lat=near.dx-far.dx}
     }
-    guideSm=guideSm?{sc:r.sc,ls,dx:.5*guideSm.dx+.5*r.dx,dy:.5*guideSm.dy+.5*r.dy}:{sc:r.sc,ls,dx:r.dx,dy:r.dy};
+    guideSm=m&&guideSm?{turn:.5*(guideSm.turn+m.turn),tilt:.5*(guideSm.tilt+m.tilt),fb:.5*(guideSm.fb+m.fb),lat:.5*(guideSm.lat+m.lat),both:m.both}:m;
     showGuide(guideSm,w);
   }
   guideT=setTimeout(guideTick,400);
@@ -519,16 +530,21 @@ function guideTick(){
 function showGuide(g,w){
   const el=$('guide'),chips=[];
   const add=(arrow,text,cls)=>chips.push('<span'+(cls?' class="'+cls+'"':'')+'><i>'+arrow+'</i>'+text+'</span>');
-  if(g.sc<.12){add('…','Searching. Point at the old scene.','wait')}
+  if(!g){add('…','Searching. Point at the old scene.','wait')}
   else{
-    const a=Math.abs(g.ls),thr=w*.04;
-    if(g.ls>.05)add('▼',a>.2?'Step back':'Step back a little');
-    else if(g.ls<-.05)add('▲',a>.2?'Step forward':'Step forward a little');
-    if(g.dx>thr)add('▶',Math.abs(g.dx)>w*.15?'Move right':'Move right a little');
-    else if(g.dx<-thr)add('◀',Math.abs(g.dx)>w*.15?'Move left':'Move left a little');
-    if(g.dy>thr)add('↓','Tilt down');
-    else if(g.dy<-thr)add('↑','Tilt up');
-    if(!chips.length)add('✓','In position. Shoot.','ok');
+    // Aim (turn the phone where you stand): dashed chips. Position (move your feet): solid chips.
+    const thr=w*.04,big=w*.15,a=v=>Math.abs(v);
+    if(g.turn>thr)add('▶',a(g.turn)>big?'Turn right':'Turn right a little','turn');
+    else if(g.turn<-thr)add('◀',a(g.turn)>big?'Turn left':'Turn left a little','turn');
+    if(g.tilt>thr)add('▼','Tilt down','turn');
+    else if(g.tilt<-thr)add('▲','Tilt up','turn');
+    if(g.lat>thr)add('→',a(g.lat)>big?'Move right':'Move right a little','move');
+    else if(g.lat<-thr)add('←',a(g.lat)>big?'Move left':'Move left a little','move');
+    if(g.fb>.06)add('↓',g.fb>.2?'Step back':'Step back a little','move');
+    else if(g.fb<-.06)add('↑',g.fb<-.2?'Step forward':'Step forward a little','move');
+    if(!chips.length&&g.both)add('✓','In position. Shoot.','ok');
+    else if(!chips.length)add('✓','Aimed. Position unchecked.','ok');
+    if(!g.both)add('…','Need foreground detail to check position','wait');
   }
   el.innerHTML=chips.join('');el.hidden=false;
 }

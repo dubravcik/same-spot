@@ -59,6 +59,7 @@ button,select,input{font:inherit;color:inherit}
 .ctl{flex:1 1 130px;min-width:0;display:flex;flex-direction:column;gap:2px}
 .ctl span{display:flex;justify-content:space-between;font:500 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .ctl output{color:var(--paper);letter-spacing:0;font-variant-numeric:tabular-nums}
+.ctl.auto{justify-content:center;min-height:28px}
 input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
 .tag{position:absolute;top:8px;left:8px;font:500 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;background:var(--scrim);color:var(--paper);padding:3px 7px;border-radius:3px;pointer-events:none}
 .tag.r{left:auto;right:8px}
@@ -186,13 +187,12 @@ input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
       <div class="seg" id="ovSeg" role="group" aria-label="Old photo overlay">
         <button type="button" id="ov-ghost" data-ov="ghost" aria-pressed="true">Ghost</button>
         <button type="button" id="ov-edges" data-ov="edges" aria-pressed="false">Edges</button>
-        <button type="button" id="ov-blink" data-ov="blink" aria-pressed="false">Blink</button>
         <button type="button" id="ov-off" data-ov="off" aria-pressed="false">Off</button>
       </div>
     </div>
     <div class="row live">
       <label class="ctl" for="opacity"><span>Overlay</span><input type="range" id="opacity" min="0" max="100" value="50"></label>
-      <label class="ctl" for="zoom"><span>Zoom <output id="zoomOut" for="zoom">1.0×</output></span><input type="range" id="zoom" min="1" max="5" step="0.01" value="1"></label>
+      <div class="ctl auto"><span>Zoom, automatic <output id="zoomOut">1.0×</output></span></div>
     </div>
     <div class="shoot">
       <div class="cell"><select id="lens" class="live" aria-label="Lens" hidden></select></div>
@@ -349,7 +349,7 @@ function go(step){
     const b=$('rail-'+s);b.disabled=!can(s);
     if(s===step)b.setAttribute('aria-current','step');else b.removeAttribute('aria-current');
   });
-  if(step==='shoot')enterShoot();else{stopCam();clearInterval(blinkT)}
+  if(step==='shoot')enterShoot();else stopCam();
   if(step!=='compare')play(false);
   if(step==='align')enterAlign();
   if(step==='compare')layoutCmp();
@@ -503,8 +503,15 @@ function guideTick(){
     let cw,ch;if(vw/vh>ar){ch=vh;cw=vh*ar}else{cw=vw;ch=vw/ar}
     cw/=S.zoom;ch/=S.zoom;
     const L=gradMap(v,(vw-cw)/2,(vh-ch)/2,cw,ch,w,h),r=guideSearch(L,guideOld,w,h);
-    const ls=Math.log(r.s);
-    guideSm=guideSm?{sc:r.sc,ls:.5*guideSm.ls+.5*ls,dx:.5*guideSm.dx+.5*r.dx,dy:.5*guideSm.dy+.5*r.dy}:{sc:r.sc,ls,dx:r.dx,dy:r.dy};
+    // Zoom follows the measured scale. Old content looking s times bigger than it should
+    // means zoom out by s. What zoom cannot fix (limits 1x to 5x) is left as a step hint.
+    let ls=Math.log(r.s);
+    if(r.sc>=.12&&Math.abs(ls)>.02){
+      const before=S.zoom;
+      setZoom(before+(clamp(before/r.s,1,5)-before)*.6);
+      ls+=Math.log(S.zoom/before);
+    }
+    guideSm=guideSm?{sc:r.sc,ls,dx:.5*guideSm.dx+.5*r.dx,dy:.5*guideSm.dy+.5*r.dy}:{sc:r.sc,ls,dx:r.dx,dy:r.dy};
     showGuide(guideSm,w);
   }
   guideT=setTimeout(guideTick,400);
@@ -536,36 +543,21 @@ function stopGuide(){
 function setZoom(z){
   S.zoom=clamp(z,1,5);
   $('video').style.transform='scale('+S.zoom+')';
-  $('zoom').value=S.zoom;$('zoomOut').textContent=S.zoom.toFixed(1)+'×';
+  $('zoomOut').textContent=S.zoom.toFixed(1)+'×';
 }
-$('zoom').addEventListener('input',e=>setZoom(+e.target.value));
-let blinkT;
 function setOverlay(m){
-  S.overlay=m;clearInterval(blinkT);
+  S.overlay=m;
   document.querySelectorAll('#ovSeg button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.ov===m));
   const g=$('ghost'),e=$('edges'),op=$('opacity').value/100;
-  g.style.visibility=m==='ghost'||m==='blink'?'visible':'hidden';
+  g.style.visibility=m==='ghost'?'visible':'hidden';
   e.style.visibility=m==='edges'?'visible':'hidden';
-  g.style.opacity=m==='blink'?1:op;e.style.opacity=.3+.7*op;
-  $('opacity').disabled=m==='blink'||m==='off';
-  if(m==='blink'){let on=true;blinkT=setInterval(()=>{on=!on;g.style.visibility=on?'visible':'hidden'},600)}
+  g.style.opacity=op;e.style.opacity=.3+.7*op;
+  $('opacity').disabled=m==='off';
 }
 document.querySelectorAll('#ovSeg button').forEach(b=>b.addEventListener('click',()=>setOverlay(b.dataset.ov)));
 $('opacity').addEventListener('input',()=>setOverlay(S.overlay));
 
-// pinch to zoom on the viewfinder
-(()=>{
-  const vf=$('vf'),pts=new Map();let pinch=null;
-  const dist=()=>{const [a,b]=[...pts.values()];return Math.hypot(a.x-b.x,a.y-b.y)||1};
-  vf.addEventListener('pointerdown',e=>{pts.set(e.pointerId,{x:e.clientX,y:e.clientY});if(pts.size===2)pinch={d:dist(),z:S.zoom}});
-  vf.addEventListener('pointermove',e=>{
-    if(!pts.has(e.pointerId))return;pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
-    if(pinch&&pts.size===2)setZoom(pinch.z*dist()/pinch.d);
-  });
-  const end=e=>{pts.delete(e.pointerId);pinch=null};
-  ['pointerup','pointercancel','pointerleave'].forEach(n=>vf.addEventListener(n,end));
-  vf.addEventListener('gesturestart',e=>e.preventDefault());
-})();
+$('vf').addEventListener('gesturestart',e=>e.preventDefault());
 
 $('shutter').addEventListener('click',async()=>{
   const v=$('video');if(!S.live||!v.videoWidth)return;

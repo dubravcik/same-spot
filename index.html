@@ -202,7 +202,7 @@ input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
     </div>
   </div>
   <div class="dock">
-    <p class="hint live" id="planeHint">Drag the four numbered rings onto important details of the old photo. A dashed ring shows where that detail is now. Move until it sits in the solid ring.</p>
+    <p class="hint live" id="planeHint">The numbered rings sit on distinctive details of the old photo. Drag one to pick a better detail. A dashed ring shows where that detail is now. Move until it sits in the solid ring.</p>
     <div class="row live">
       <div class="seg" id="ovSeg" role="group" aria-label="Old photo overlay">
         <button type="button" id="ov-ghost" data-ov="ghost" aria-pressed="true">Ghost</button>
@@ -400,13 +400,42 @@ $('oldFile').addEventListener('change',async e=>{
   const f=e.target.files[0];e.target.value='';if(!f)return;
   try{S.old=await loadImage(f)}catch{return toast('That file could not be read as an image. Try a JPEG or PNG.')}
   S.neu=null;S.res=null;S.H=null;S.zoom=1;
-  S.plane=PLANE_DEFAULT.map(([x,y])=>({x,y}));planeCur=null;
+  S.plane=autoMarks(S.old);planeCur=null;
   const g=$('ghost'),s=Math.min(1,1200/Math.max(S.old.width,S.old.height));
   g.width=Math.round(S.old.width*s);g.height=Math.round(S.old.height*s);
   g.getContext('2d').drawImage(S.old,0,0,g.width,g.height);
   makeEdges(S.old,$('edges'));
   go('shoot');
 });
+
+// Put the four marks on the most distinctive corners, one per quarter of the photo so they
+// are spread out. Corner strength is the smaller eigenvalue of the local gradient matrix.
+function autoMarks(img){
+  const w=160,h=Math.max(16,Math.round(w*img.height/img.width));
+  const g=mk(w,h).getContext('2d',{willReadFrequently:true});g.drawImage(img,0,0,w,h);
+  const p=g.getImageData(0,0,w,h).data,gr=new Float32Array(w*h);
+  for(let i=0,j=0;i<gr.length;i++,j+=4)gr[i]=.299*p[j]+.587*p[j+1]+.114*p[j+2];
+  const xx=new Float32Array(w*h),yy=new Float32Array(w*h),xy=new Float32Array(w*h);
+  for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
+    const i=y*w+x,dx=gr[i+1]-gr[i-1],dy=gr[i+w]-gr[i-w];xx[i]=dx*dx;yy[i]=dy*dy;xy[i]=dx*dy;
+  }
+  const mx=Math.round(w*.08),my=Math.round(h*.08),r=2,R=new Float32Array(w*h);
+  for(let y=my;y<h-my;y++)for(let x=mx;x<w-mx;x++){
+    let a=0,b=0,c=0;
+    for(let v=-r;v<=r;v++)for(let u=-r;u<=r;u++){const i=(y+v)*w+x+u;a+=xx[i];b+=yy[i];c+=xy[i]}
+    R[y*w+x]=(a+b)/2-Math.sqrt(((a-b)/2)*((a-b)/2)+c*c);
+  }
+  const out=[];
+  // order: top left, top right, bottom right, bottom left
+  [[0,0],[1,0],[1,1],[0,1]].forEach(([qx,qy])=>{
+    const x0=Math.max(mx,Math.round(qx*w/2)),x1=Math.min(w-mx,Math.round((qx+1)*w/2));
+    const y0=Math.max(my,Math.round(qy*h/2)),y1=Math.min(h-my,Math.round((qy+1)*h/2));
+    let best=-1,bx=(x0+x1)/2,by=(y0+y1)/2;
+    for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++)if(R[y*w+x]>best){best=R[y*w+x];bx=x;by=y}
+    out.push({x:(bx+.5)/w,y:(by+.5)/h});
+  });
+  return out;
+}
 
 function makeEdges(img,cv){
   const s=Math.min(1,800/Math.max(img.width,img.height)),w=Math.max(3,Math.round(img.width*s)),h=Math.max(3,Math.round(img.height*s));

@@ -94,7 +94,15 @@ input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
 .nocam .shoot .cell:first-child{display:none}
 
 /* movement guide: where to stand, shown over the viewfinder */
-.guide{position:absolute;top:8px;left:8px;right:8px;display:flex;flex-wrap:wrap;justify-content:center;gap:6px;pointer-events:none}
+.guide{position:absolute;inset:8px;pointer-events:none}
+.guide span{position:absolute}
+.guide .p-tl{left:0;top:34%}.guide .p-tr{right:0;top:34%}
+.guide .p-ml{left:0;top:54%}.guide .p-mr{right:0;top:54%}
+.guide .p-tu{left:50%;top:0;transform:translateX(-50%)}.guide .p-fw{left:50%;top:42px;transform:translateX(-50%)}
+.guide .p-td{left:50%;bottom:0;transform:translateX(-50%)}.guide .p-bk{left:50%;bottom:42px;transform:translateX(-50%)}
+.guide .p-st{left:50%;top:50%;transform:translate(-50%,-50%)}
+.guide .p-sw{left:50%;top:calc(50% + 40px);transform:translate(-50%,-50%);max-width:90%;text-align:center}
+.guide span.big{border-width:3px;font-weight:600}
 .guide span{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0 12px;border-radius:17px;background:var(--scrim);border:1px solid var(--signal);font:500 14px var(--mono);letter-spacing:.02em;color:var(--paper)}
 .guide span i{font-style:normal;color:var(--signal);font-size:16px;line-height:1}
 .guide span.turn{border-style:dashed}
@@ -529,22 +537,24 @@ function guideTick(){
 }
 function showGuide(g,w){
   const el=$('guide'),chips=[];
-  const add=(arrow,text,cls)=>chips.push('<span'+(cls?' class="'+cls+'"':'')+'><i>'+arrow+'</i>'+text+'</span>');
-  if(!g){add('…','Searching. Point at the old scene.','wait')}
+  // Each hint sits on the side of the image it points to. Aim (turn the phone where you stand):
+  // dashed chips on the outer edge. Position (move your feet): solid chips just inside them.
+  // A thick outline means a big correction.
+  const add=(pos,arrow,text,cls,isBig)=>chips.push('<span class="p-'+pos+' '+cls+(isBig?' big':'')+'"><i>'+arrow+'</i>'+text+'</span>');
+  if(!g){add('st','…','Searching. Point at the old scene.','wait')}
   else{
-    // Aim (turn the phone where you stand): dashed chips. Position (move your feet): solid chips.
     const thr=w*.04,big=w*.15,a=v=>Math.abs(v);
-    if(g.turn>thr)add('▶',a(g.turn)>big?'Turn right':'Turn right a little','turn');
-    else if(g.turn<-thr)add('◀',a(g.turn)>big?'Turn left':'Turn left a little','turn');
-    if(g.tilt>thr)add('▼','Tilt down','turn');
-    else if(g.tilt<-thr)add('▲','Tilt up','turn');
-    if(g.lat>thr)add('→',a(g.lat)>big?'Move right':'Move right a little','move');
-    else if(g.lat<-thr)add('←',a(g.lat)>big?'Move left':'Move left a little','move');
-    if(g.fb>.06)add('↓',g.fb>.2?'Step back':'Step back a little','move');
-    else if(g.fb<-.06)add('↑',g.fb<-.2?'Step forward':'Step forward a little','move');
-    if(!chips.length&&g.both)add('✓','In position. Shoot.','ok');
-    else if(!chips.length)add('✓','Aimed. Position unchecked.','ok');
-    if(!g.both)add('…','Need foreground detail to check position','wait');
+    if(g.turn>thr)add('tr','▶','Turn right','turn',a(g.turn)>big);
+    else if(g.turn<-thr)add('tl','◀','Turn left','turn',a(g.turn)>big);
+    if(g.tilt>thr)add('td','▼','Tilt down','turn',a(g.tilt)>big);
+    else if(g.tilt<-thr)add('tu','▲','Tilt up','turn',a(g.tilt)>big);
+    if(g.lat>thr)add('mr','→','Move right','move',a(g.lat)>big);
+    else if(g.lat<-thr)add('ml','←','Move left','move',a(g.lat)>big);
+    if(g.fb>.06)add('bk','↓','Step back','move',g.fb>.2);
+    else if(g.fb<-.06)add('fw','↑','Step forward','move',g.fb<-.2);
+    if(!chips.length&&g.both)add('st','✓','In position. Shoot.','ok');
+    else if(!chips.length)add('st','✓','Aimed. Position unchecked.','ok');
+    if(!g.both)add('sw','…','Need foreground detail to check position','wait');
   }
   el.innerHTML=chips.join('');el.hidden=false;
 }

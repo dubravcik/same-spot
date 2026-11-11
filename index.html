@@ -107,12 +107,7 @@ input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
 /* plane: a flat surface marked on the old photo, shown fixed (solid) and as seen live (dashed) */
 .pm{position:absolute;width:44px;height:44px;margin:-22px 0 0 -22px;padding:0;border:0;border-radius:50%;background:none;touch-action:none;cursor:grab;z-index:2}
 .pm:focus-visible{outline:2px solid var(--signal)}
-.nocam .pm,.nocam #plane,.nocam #planeHint{display:none}
-.tray{display:flex;align-items:center;gap:8px}
-.tray[hidden]{display:none}
-.thumbs{flex:1;min-width:0;display:flex;gap:6px;overflow-x:auto}
-.thumb{flex:none;height:40px;border-radius:3px;border:1px solid var(--line)}
-#planeHint{font-size:13px}
+.nocam .pm,.nocam #plane,.nocam #planeHint{display:none}#planeHint{font-size:13px}
 .cmp .pane canvas.plane{position:absolute;inset:0;pointer-events:none}
 .btn[aria-pressed=true]{border-color:var(--signal)}
 .guide span{display:inline-flex;align-items:center;gap:5px;min-height:28px;padding:0 9px;border-radius:14px;background:var(--scrim);border:1px solid var(--signal);font:500 12px var(--mono);letter-spacing:.01em;color:var(--paper);white-space:nowrap}
@@ -217,11 +212,6 @@ input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
     <div class="row live">
       <label class="ctl" for="opacity"><span>Overlay</span><input type="range" id="opacity" min="0" max="100" value="50"></label>
       <div class="ctl auto"><span>Zoom, automatic <output id="zoomOut">1.0×</output></span></div>
-    </div>
-    <div class="tray live" id="tray" hidden>
-      <div class="thumbs" id="thumbs"></div>
-      <button type="button" class="btn" id="clrShots">Clear</button>
-      <button type="button" class="btn primary" id="cmpShots">Compare (<span id="shotCount">0</span>)</button>
     </div>
     <div class="shoot">
       <div class="cell"><select id="lens" class="live" aria-label="Lens" hidden></select></div>
@@ -340,7 +330,7 @@ const tok=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim
 const rgb=h=>{const n=parseInt(h.slice(1),16);return [n>>16,n>>8&255,n&255]};
 const STEPS=['start','shoot','align','compare'];
 const PLANE_DEFAULT=[[.3,.35],[.7,.35],[.7,.75],[.3,.75]];
-const S={shots:[],extra:[],plane:null,showPlane:true,step:'start',old:null,neu:null,H:null,res:null,zoom:1,overlay:'ghost',mode:'slider',stream:null,live:false,noCam:false};
+const S={plane:null,showPlane:true,step:'start',old:null,neu:null,H:null,res:null,zoom:1,overlay:'ghost',mode:'slider',stream:null,live:false,noCam:false};
 
 let toastT;
 function toast(msg){const t=$('toast');t.textContent=msg;t.hidden=false;clearTimeout(toastT);toastT=setTimeout(()=>{t.hidden=true},5000)}
@@ -408,7 +398,7 @@ document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=
 $('oldFile').addEventListener('change',async e=>{
   const f=e.target.files[0];e.target.value='';if(!f)return;
   try{S.old=await loadImage(f)}catch{return toast('That file could not be read as an image. Try a JPEG or PNG.')}
-  S.neu=null;S.res=null;S.H=null;S.zoom=1;S.shots=[];S.extra=[];
+  S.neu=null;S.res=null;S.H=null;S.zoom=1;
   S.plane=autoMarks(S.old);planeCur=null;
   const g=$('ghost'),s=Math.min(1,1200/Math.max(S.old.width,S.old.height));
   g.width=Math.round(S.old.width*s);g.height=Math.round(S.old.height*s);
@@ -538,6 +528,20 @@ document.addEventListener('visibilitychange',()=>{
 const GW=72;
 const gctx=mk(1,1).getContext('2d',{willReadFrequently:true});
 let guideT=0,guideOld=null,guideDim=null,guideSm=null,planeCur=null,planeSm=null,markErr=0;
+let guideOld2=null,guideDim2=null,markT=[null,null,null,null],markRaf=0;
+// Rings glide toward the latest tracked position every frame and fade in and out,
+// so they move smoothly even though tracking updates only a few times a second.
+function animMarks(){
+  if(!planeCur)planeCur=[null,null,null,null];
+  for(let i=0;i<4;i++){
+    const t=markT[i];
+    if(t){
+      if(!planeCur[i])planeCur[i]={x:t.x,y:t.y,a:0};
+      const q=planeCur[i];q.x+=(t.x-q.x)*.18;q.y+=(t.y-q.y)*.18;q.a+=(1-q.a)*.15;
+    }else if(planeCur[i]){planeCur[i].a*=.85;if(planeCur[i].a<.03)planeCur[i]=null}
+  }
+  drawPlane();markRaf=requestAnimationFrame(animMarks);
+}
 function gradMap(src,sx,sy,sw,sh,w,h){
   const c=gctx.canvas;c.width=w;c.height=h;
   gctx.drawImage(src,sx,sy,sw,sh,0,0,w,h);
@@ -551,10 +555,9 @@ function gradMap(src,sx,sy,sw,sh,w,h){
 }
 // Match the patch around old-photo point (qx,qy) against the live map; the old patch is seen
 // at scale s, so the live patch centre is expected near c+s*(q-c) plus an offset to find.
-function patchSearch(L,O,w,h,qx,qy,s){
-  const cx=(w-1)/2,cy=(h-1)/2,bx=cx+s*(qx-cx),by=cy+s*(qy-cy),hx=5,hy=4;
-  let best={sc:-1,dx:0,dy:0};
-  for(let dy=-10;dy<=10;dy++)for(let dx=-14;dx<=14;dx++){
+function patchSearch(L,O,w,h,qx,qy,s,R=14,RY=10,hx=5,hy=4){
+  const cx=(w-1)/2,cy=(h-1)/2,bx=cx+s*(qx-cx),by=cy+s*(qy-cy);
+  const score=(dx,dy)=>{
     let n=0,sa=0,sb=0,saa=0,sbb=0,sab=0;
     for(let v=-hy;v<=hy;v++){
       const y=Math.round(by+dy+v),oy=Math.round(qy+v/s);if(y<0||y>=h||oy<0||oy>=h)continue;
@@ -563,10 +566,19 @@ function patchSearch(L,O,w,h,qx,qy,s){
         const a=L[y*w+x],b=O[oy*w+ox];n++;sa+=a;sb+=b;saa+=a*a;sbb+=b*b;sab+=a*b;
       }
     }
-    if(n<hx*hy*3)continue;
-    const va=saa-sa*sa/n,vb=sbb-sb*sb/n;if(va<1e-6||vb<1e-6)continue;
-    const sc=(sab-sa*sb/n)/Math.sqrt(va*vb);
-    if(sc>best.sc)best={sc,dx,dy};
+    if(n<hx*hy*3)return -1;
+    const va=saa-sa*sa/n,vb=sbb-sb*sb/n;if(va<1e-6||vb<1e-6)return -1;
+    return (sab-sa*sb/n)/Math.sqrt(va*vb);
+  };
+  let best={sc:-1,dx:0,dy:0};
+  for(let dy=-RY;dy<=RY;dy++)for(let dx=-R;dx<=R;dx++){
+    const sc=score(dx,dy);if(sc>best.sc)best={sc,dx,dy};
+  }
+  if(best.sc>0){
+    // sub-pixel: fit a parabola through the peak and its neighbours on each axis
+    const sub=(a,c,b)=>{const den=a-2*c+b;return a>-1&&b>-1&&den<0?clamp((a-b)/(2*den),-.5,.5):0};
+    best.dx+=sub(score(best.dx-1,best.dy),best.sc,score(best.dx+1,best.dy));
+    best.dy+=sub(score(best.dx,best.dy-1),best.sc,score(best.dx,best.dy+1));
   }
   return best;
 }
@@ -642,22 +654,27 @@ function guideTick(){
     }
     // Where each marked point appears live: look for that point's patch near where the measured
     // scale predicts it, and draw a dashed ring there.
-    planeCur=null;
+    // Tracked on a map twice as fine as the hints, to sub-pixel accuracy. Each new position is
+    // averaged with the last one, and a mark survives three missed reads before it fades out.
     if(S.plane&&ref){
-      const s=ref.s;
-      planeCur=S.plane.map(p=>{
-        const r=patchSearch(L,guideOld,w,h,p.x*w-.5,p.y*h-.5,s);
-        return r.sc>=.4?{x:(w/2+s*(p.x*w-w/2)+r.dx)/w,y:(h/2+s*(p.y*h-h/2)+r.dy)/h}:null;
+      const s=ref.s,W2=w*2,H2=h*2;
+      if(!guideOld2||guideDim2!==W2+'x'+H2){guideOld2=gradMap(S.old,0,0,S.old.width,S.old.height,W2,H2);guideDim2=W2+'x'+H2}
+      const L2=gradMap(v,(vw-cw)/2,(vh-ch)/2,cw,ch,W2,H2);
+      S.plane.forEach((p,i)=>{
+        const r=patchSearch(L2,guideOld2,W2,H2,p.x*W2-.5,p.y*H2-.5,s,28,20,7,6),t=markT[i];
+        if(r.sc>=.4){
+          const x=(W2/2+s*(p.x*W2-W2/2)+r.dx)/W2,y=(H2/2+s*(p.y*H2-H2/2)+r.dy)/H2;
+          markT[i]=t?{x:.5*t.x+.5*x,y:.5*t.y+.5*y,miss:0}:{x,y,miss:0};
+        }else if(t&&++t.miss>3)markT[i]=null;
       });
-    }
+    }else markT=[null,null,null,null];
     // how far the live rings are from the solid ones, as a fraction of the width
     markErr=0;
-    if(planeCur)S.plane.forEach((p,i)=>{const c=planeCur[i];if(c)markErr=Math.max(markErr,Math.hypot((c.x-p.x)*w,(c.y-p.y)*h)/w)});
-    drawPlane();
+    S.plane&&S.plane.forEach((p,i)=>{const c=markT[i];if(c)markErr=Math.max(markErr,Math.hypot((c.x-p.x)*w,(c.y-p.y)*h)/w)});
     guideSm=m&&guideSm?{turn:.5*(guideSm.turn+m.turn),tilt:.5*(guideSm.tilt+m.tilt),fb:.5*(guideSm.fb+m.fb),lat:.5*(guideSm.lat+m.lat),both:m.both}:m;
     showGuide(guideSm,w);
   }
-  guideT=setTimeout(guideTick,400);
+  guideT=setTimeout(guideTick,250);
 }
 function showGuide(g,w){
   const el=$('guide'),chips=[];
@@ -684,11 +701,12 @@ function showGuide(g,w){
   el.innerHTML=chips.join('');el.hidden=false;
 }
 function startGuide(){
-  stopGuide();guideOld=null;guideSm=null;planeSm=null;
-  guideT=setTimeout(guideTick,600);
+  stopGuide();guideOld=null;guideOld2=null;guideSm=null;planeSm=null;
+  guideT=setTimeout(guideTick,600);markRaf=requestAnimationFrame(animMarks);
 }
 function stopGuide(){
-  clearTimeout(guideT);guideT=0;$('guide').hidden=true;planeCur=null;planeSm=null;drawPlane();
+  clearTimeout(guideT);guideT=0;cancelAnimationFrame(markRaf);markRaf=0;$('guide').hidden=true;
+  markT=[null,null,null,null];planeCur=null;planeSm=null;drawPlane();
 }
 
 /* ---------- plane: four draggable corners on the viewfinder ---------- */
@@ -697,7 +715,7 @@ const pmarks=[0,1,2,3].map(i=>{
   b.setAttribute('aria-label','Plane corner '+(i+1)+'. Arrow keys move it.');
   $('vf').appendChild(b);
   let on=false;
-  const set=(x,y)=>{S.plane[i]={x:clamp(x,0,1),y:clamp(y,0,1)};planeSm=null;placePlane()};
+  const set=(x,y)=>{S.plane[i]={x:clamp(x,0,1),y:clamp(y,0,1)};planeSm=null;markT[i]=null;if(planeCur)planeCur[i]=null;placePlane()};
   b.addEventListener('pointerdown',e=>{e.preventDefault();b.setPointerCapture(e.pointerId);on=true});
   b.addEventListener('pointermove',e=>{if(!on)return;const r=$('vf').getBoundingClientRect();set((e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height)});
   ['pointerup','pointercancel'].forEach(n=>b.addEventListener(n,()=>{on=false}));
@@ -726,9 +744,11 @@ function drawPlane(){
     const c=planeCur&&planeCur[i];
     if(c){
       // dashed ring = where this detail is in the live view; the lead shrinks as you move into place
+      g.globalAlpha=c.a==null?1:c.a;
       g.setLineDash([3,4]);g.lineWidth=1.5;g.strokeStyle='rgba(234,241,246,.7)';
       g.beginPath();g.moveTo(p.x*W,p.y*H);g.lineTo(c.x*W,c.y*H);g.stroke();
       ring(c.x,c.y,paper,[5,4],'rgba(234,241,246,.12)');
+      g.globalAlpha=1;
     }
     ring(p.x,p.y,signal,[],'rgba(255,191,46,.14)');
     g.setLineDash([]);g.fillStyle=signal;g.font='600 12px '+tok('--mono');g.textAlign='center';g.textBaseline='middle';
@@ -762,95 +782,11 @@ $('shutter').addEventListener('click',async()=>{
   const vf=$('vf');vf.classList.remove('flash');void vf.offsetWidth;vf.classList.add('flash');
   // The zoom may still be easing when the shutter goes, so measure the captured frame against
   // the old photo once more and fit scale and shift exactly. This is what makes After match Before.
-  let H0=h0(S.old.width,S.old.height,c.width,c.height,S.zoom),sc=0;
+  S.neu=c;S.H=h0(S.old.width,S.old.height,c.width,c.height,S.zoom);
   $('busy').hidden=false;await new Promise(r=>setTimeout(r,40));
-  try{const rf=refineH(c,S.zoom);if(rf){H0=rf;sc=rf.sc}}catch{}
-  $('busy').hidden=true;
-  S.shots.push({c,H:H0,sc});renderTray();
+  try{const rf=refineH(c,S.zoom);if(rf)S.H=rf}catch{}
+  if(await build())go('compare');
 });
-/* ---------- several shots: merge the best-matching parts ---------- */
-function renderTray(){
-  const tr=$('tray'),th=$('thumbs');tr.hidden=!S.shots.length;th.replaceChildren();
-  S.shots.forEach(s=>{
-    const t=mk(Math.round(40*s.c.width/s.c.height),40);t.getContext('2d').drawImage(s.c,0,0,t.width,t.height);
-    t.className='thumb';th.appendChild(t);
-  });
-  $('shotCount').textContent=S.shots.length;
-}
-async function useShots(){
-  if(!S.shots.length)return;
-  const sorted=[...S.shots].sort((a,b)=>b.sc-a.sc),p=sorted[0];
-  S.neu=p.c;S.H=p.H;S.extra=sorted.slice(1);S.res=null;
-  if(await build()){go('compare');if(S.extra.length)toast('Combined '+S.shots.length+' shots, taking the best-matching parts of each.')}
-}
-$('cmpShots').addEventListener('click',useShots);
-$('clrShots').addEventListener('click',()=>{S.shots=[];renderTray()});
-function grayOf(src,W,H){
-  const c=mk(W,H),g=c.getContext('2d',{willReadFrequently:true});g.drawImage(src,0,0,W,H);
-  const p=g.getImageData(0,0,W,H).data,o=new Float32Array(W*H);
-  for(let i=0,j=0;i<o.length;i++,j+=4)o[i]=.299*p[j]+.587*p[j+1]+.114*p[j+2];
-  return o;
-}
-function warpImg(neu,hm,W,H){
-  const nw=neu.width,nh=neu.height,src=neu.getContext('2d',{willReadFrequently:true}).getImageData(0,0,nw,nh).data;
-  const o=new Uint8ClampedArray(W*H*4);
-  for(let py=0;py<H;py++){
-    const yn=(py+.5)/H;
-    for(let px=0;px<W;px++){
-      const xn=(px+.5)/W,d=hm[6]*xn+hm[7]*yn+hm[8];if(d<=1e-6)continue;
-      const u=(hm[0]*xn+hm[1]*yn+hm[2])/d*nw-.5,v=(hm[3]*xn+hm[4]*yn+hm[5])/d*nh-.5;
-      if(!(u>=0&&v>=0&&u<=nw-1&&v<=nh-1))continue;
-      const x0=u|0,y0=v|0,fx=u-x0,fy=v-y0,x1=x0+1<nw?x0+1:x0,y1=y0+1<nh?y0+1:y0;
-      const a=(y0*nw+x0)*4,b=(y0*nw+x1)*4,c=(y1*nw+x0)*4,e=(y1*nw+x1)*4,i=(py*W+px)*4;
-      const w00=(1-fx)*(1-fy),w10=fx*(1-fy),w01=(1-fx)*fy,w11=fx*fy;
-      o[i]=src[a]*w00+src[b]*w10+src[c]*w01+src[e]*w11;
-      o[i+1]=src[a+1]*w00+src[b+1]*w10+src[c+1]*w01+src[e+1]*w11;
-      o[i+2]=src[a+2]*w00+src[b+2]*w10+src[c+2]*w01+src[e+2]*w11;
-      o[i+3]=255;
-    }
-  }
-  return o;
-}
-// Blend the shots per region. Each 24 px tile of each shot is scored by how well it correlates
-// with the old photo, and the weights are smoothed between tiles so there are no seams. Pixels
-// that only one shot covers come from that shot, so the merged frame can cover more than any one.
-function combineShots(o,W,H){
-  const arrs=[new Uint8ClampedArray(o),...S.extra.map(s=>warpImg(s.c,s.H,W,H))];
-  const og=grayOf(S.old,W,H),T=24,tx=Math.ceil(W/T),ty=Math.ceil(H/T);
-  const ws=arrs.map(a=>{
-    const n=new Float64Array(tx*ty),sa=new Float64Array(tx*ty),sb=new Float64Array(tx*ty),saa=new Float64Array(tx*ty),sbb=new Float64Array(tx*ty),sab=new Float64Array(tx*ty);
-    for(let y=0;y<H;y++){
-      const row=Math.floor(y/T)*tx;
-      for(let x=0;x<W;x++){
-        const i=y*W+x;if(a[i*4+3]===0)continue;
-        const t=row+Math.floor(x/T),g=.299*a[i*4]+.587*a[i*4+1]+.114*a[i*4+2],q=og[i];
-        n[t]++;sa[t]+=g;sb[t]+=q;saa[t]+=g*g;sbb[t]+=q*q;sab[t]+=g*q;
-      }
-    }
-    const wt=new Float32Array(tx*ty);
-    for(let t=0;t<wt.length;t++){
-      if(n[t]<T*T*.3)continue;
-      const va=saa[t]-sa[t]*sa[t]/n[t],vb=sbb[t]-sb[t]*sb[t]/n[t];if(va<1e-6||vb<1e-6){wt[t]=1e-3;continue}
-      wt[t]=Math.pow(Math.max(0,(sab[t]-sa[t]*sb[t]/n[t])/Math.sqrt(va*vb)),6)+1e-3;
-    }
-    return wt;
-  });
-  const bil=(wt,x,y)=>{
-    const fx=(x+.5)/T-.5,fy=(y+.5)/T-.5,x0=Math.floor(fx),y0=Math.floor(fy),ax=fx-x0,ay=fy-y0;
-    const g=(xx,yy)=>wt[clamp(yy,0,ty-1)*tx+clamp(xx,0,tx-1)];
-    return (g(x0,y0)*(1-ax)+g(x0+1,y0)*ax)*(1-ay)+(g(x0,y0+1)*(1-ax)+g(x0+1,y0+1)*ax)*ay;
-  };
-  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
-    const i=(y*W+x)*4;let r=0,g=0,b=0,sw=0,any=-1;
-    for(let k=0;k<arrs.length;k++){
-      const a=arrs[k];if(a[i+3]===0)continue;
-      any=k;const w=bil(ws[k],x,y);r+=a[i]*w;g+=a[i+1]*w;b+=a[i+2]*w;sw+=w;
-    }
-    if(any<0){o[i+3]=0;continue}
-    if(sw<1e-9){const a=arrs[any];r=a[i];g=a[i+1];b=a[i+2];sw=1}
-    o[i]=r/sw;o[i+1]=g/sw;o[i+2]=b/sw;o[i+3]=255;
-  }
-}
 function fitSearch(L,O,w,h,s0,ds,ns,dstep,nx,ny,cxs,cys){
   let best={sc:-1,s:1,dx:0,dy:0};
   for(let si=-ns;si<=ns;si++){
@@ -889,7 +825,7 @@ function refineH(c,z){
 $('newFile').addEventListener('change',async e=>{
   const f=e.target.files[0];e.target.value='';if(!f)return;
   try{S.neu=await loadImage(f)}catch{return toast('That file could not be read as an image. Try a JPEG or PNG.')}
-  S.H=h0(S.old.width,S.old.height,S.neu.width,S.neu.height,1);S.res=null;S.extra=[];
+  S.H=h0(S.old.width,S.old.height,S.neu.width,S.neu.height,1);S.res=null;
   go('align');
 });
 
@@ -980,7 +916,6 @@ function warp(){
       o[i+3]=255;
     }
   }
-  if(S.extra&&S.extra.length)combineShots(o,W,H);
   const r=sharedRect(o,W,H),cw=r.r-r.l+1,ch=r.b-r.t+1;
   if(cw<24||ch<24)return null;
   const A=$('cAfter'),B=$('cBefore');
@@ -1052,7 +987,7 @@ $('planeBtn').addEventListener('click',()=>{
   S.showPlane=!S.showPlane;$('planeBtn').setAttribute('aria-pressed',S.showPlane);drawComparePlane();
 });
 $('toAlign').addEventListener('click',()=>go('align'));
-$('toShoot').addEventListener('click',()=>{S.shots=[];S.extra=[];renderTray();go('shoot')});
+$('toShoot').addEventListener('click',()=>go('shoot'));
 
 /* saving: Claude's download prompt inside an artifact, share sheet or plain download elsewhere */
 const dlReady=window.claude&&window.claude.use?window.claude.use('downloads').catch(()=>null):Promise.resolve(null);

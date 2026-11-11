@@ -108,6 +108,10 @@ input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
 .pm{position:absolute;width:44px;height:44px;margin:-22px 0 0 -22px;padding:0;border:0;border-radius:50%;background:none;touch-action:none;cursor:grab;z-index:2}
 .pm:focus-visible{outline:2px solid var(--signal)}
 .nocam .pm,.nocam #plane,.nocam #planeHint{display:none}
+.tray{display:flex;align-items:center;gap:8px}
+.tray[hidden]{display:none}
+.thumbs{flex:1;min-width:0;display:flex;gap:6px;overflow-x:auto}
+.thumb{flex:none;height:40px;border-radius:3px;border:1px solid var(--line)}
 #planeHint{font-size:13px}
 .cmp .pane canvas.plane{position:absolute;inset:0;pointer-events:none}
 .btn[aria-pressed=true]{border-color:var(--signal)}
@@ -213,6 +217,11 @@ input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
     <div class="row live">
       <label class="ctl" for="opacity"><span>Overlay</span><input type="range" id="opacity" min="0" max="100" value="50"></label>
       <div class="ctl auto"><span>Zoom, automatic <output id="zoomOut">1.0×</output></span></div>
+    </div>
+    <div class="tray live" id="tray" hidden>
+      <div class="thumbs" id="thumbs"></div>
+      <button type="button" class="btn" id="clrShots">Clear</button>
+      <button type="button" class="btn primary" id="cmpShots">Compare (<span id="shotCount">0</span>)</button>
     </div>
     <div class="shoot">
       <div class="cell"><select id="lens" class="live" aria-label="Lens" hidden></select></div>
@@ -331,7 +340,7 @@ const tok=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim
 const rgb=h=>{const n=parseInt(h.slice(1),16);return [n>>16,n>>8&255,n&255]};
 const STEPS=['start','shoot','align','compare'];
 const PLANE_DEFAULT=[[.3,.35],[.7,.35],[.7,.75],[.3,.75]];
-const S={plane:null,showPlane:true,step:'start',old:null,neu:null,H:null,res:null,zoom:1,overlay:'ghost',mode:'slider',stream:null,live:false,noCam:false};
+const S={shots:[],extra:[],plane:null,showPlane:true,step:'start',old:null,neu:null,H:null,res:null,zoom:1,overlay:'ghost',mode:'slider',stream:null,live:false,noCam:false};
 
 let toastT;
 function toast(msg){const t=$('toast');t.textContent=msg;t.hidden=false;clearTimeout(toastT);toastT=setTimeout(()=>{t.hidden=true},5000)}
@@ -399,7 +408,7 @@ document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=
 $('oldFile').addEventListener('change',async e=>{
   const f=e.target.files[0];e.target.value='';if(!f)return;
   try{S.old=await loadImage(f)}catch{return toast('That file could not be read as an image. Try a JPEG or PNG.')}
-  S.neu=null;S.res=null;S.H=null;S.zoom=1;
+  S.neu=null;S.res=null;S.H=null;S.zoom=1;S.shots=[];S.extra=[];
   S.plane=autoMarks(S.old);planeCur=null;
   const g=$('ghost'),s=Math.min(1,1200/Math.max(S.old.width,S.old.height));
   g.width=Math.round(S.old.width*s);g.height=Math.round(S.old.height*s);
@@ -751,13 +760,97 @@ $('shutter').addEventListener('click',async()=>{
   const s=Math.min(1,MAX/Math.max(v.videoWidth,v.videoHeight)),c=mk(Math.round(v.videoWidth*s),Math.round(v.videoHeight*s));
   c.getContext('2d',{willReadFrequently:true}).drawImage(v,0,0,c.width,c.height);
   const vf=$('vf');vf.classList.remove('flash');void vf.offsetWidth;vf.classList.add('flash');
-  S.neu=c;S.H=h0(S.old.width,S.old.height,c.width,c.height,S.zoom);
   // The zoom may still be easing when the shutter goes, so measure the captured frame against
   // the old photo once more and fit scale and shift exactly. This is what makes After match Before.
+  let H0=h0(S.old.width,S.old.height,c.width,c.height,S.zoom),sc=0;
   $('busy').hidden=false;await new Promise(r=>setTimeout(r,40));
-  try{const rf=refineH(c,S.zoom);if(rf)S.H=rf}catch{}
-  if(await build())go('compare');
+  try{const rf=refineH(c,S.zoom);if(rf){H0=rf;sc=rf.sc}}catch{}
+  $('busy').hidden=true;
+  S.shots.push({c,H:H0,sc});renderTray();
 });
+/* ---------- several shots: merge the best-matching parts ---------- */
+function renderTray(){
+  const tr=$('tray'),th=$('thumbs');tr.hidden=!S.shots.length;th.replaceChildren();
+  S.shots.forEach(s=>{
+    const t=mk(Math.round(40*s.c.width/s.c.height),40);t.getContext('2d').drawImage(s.c,0,0,t.width,t.height);
+    t.className='thumb';th.appendChild(t);
+  });
+  $('shotCount').textContent=S.shots.length;
+}
+async function useShots(){
+  if(!S.shots.length)return;
+  const sorted=[...S.shots].sort((a,b)=>b.sc-a.sc),p=sorted[0];
+  S.neu=p.c;S.H=p.H;S.extra=sorted.slice(1);S.res=null;
+  if(await build()){go('compare');if(S.extra.length)toast('Combined '+S.shots.length+' shots, taking the best-matching parts of each.')}
+}
+$('cmpShots').addEventListener('click',useShots);
+$('clrShots').addEventListener('click',()=>{S.shots=[];renderTray()});
+function grayOf(src,W,H){
+  const c=mk(W,H),g=c.getContext('2d',{willReadFrequently:true});g.drawImage(src,0,0,W,H);
+  const p=g.getImageData(0,0,W,H).data,o=new Float32Array(W*H);
+  for(let i=0,j=0;i<o.length;i++,j+=4)o[i]=.299*p[j]+.587*p[j+1]+.114*p[j+2];
+  return o;
+}
+function warpImg(neu,hm,W,H){
+  const nw=neu.width,nh=neu.height,src=neu.getContext('2d',{willReadFrequently:true}).getImageData(0,0,nw,nh).data;
+  const o=new Uint8ClampedArray(W*H*4);
+  for(let py=0;py<H;py++){
+    const yn=(py+.5)/H;
+    for(let px=0;px<W;px++){
+      const xn=(px+.5)/W,d=hm[6]*xn+hm[7]*yn+hm[8];if(d<=1e-6)continue;
+      const u=(hm[0]*xn+hm[1]*yn+hm[2])/d*nw-.5,v=(hm[3]*xn+hm[4]*yn+hm[5])/d*nh-.5;
+      if(!(u>=0&&v>=0&&u<=nw-1&&v<=nh-1))continue;
+      const x0=u|0,y0=v|0,fx=u-x0,fy=v-y0,x1=x0+1<nw?x0+1:x0,y1=y0+1<nh?y0+1:y0;
+      const a=(y0*nw+x0)*4,b=(y0*nw+x1)*4,c=(y1*nw+x0)*4,e=(y1*nw+x1)*4,i=(py*W+px)*4;
+      const w00=(1-fx)*(1-fy),w10=fx*(1-fy),w01=(1-fx)*fy,w11=fx*fy;
+      o[i]=src[a]*w00+src[b]*w10+src[c]*w01+src[e]*w11;
+      o[i+1]=src[a+1]*w00+src[b+1]*w10+src[c+1]*w01+src[e+1]*w11;
+      o[i+2]=src[a+2]*w00+src[b+2]*w10+src[c+2]*w01+src[e+2]*w11;
+      o[i+3]=255;
+    }
+  }
+  return o;
+}
+// Blend the shots per region. Each 24 px tile of each shot is scored by how well it correlates
+// with the old photo, and the weights are smoothed between tiles so there are no seams. Pixels
+// that only one shot covers come from that shot, so the merged frame can cover more than any one.
+function combineShots(o,W,H){
+  const arrs=[new Uint8ClampedArray(o),...S.extra.map(s=>warpImg(s.c,s.H,W,H))];
+  const og=grayOf(S.old,W,H),T=24,tx=Math.ceil(W/T),ty=Math.ceil(H/T);
+  const ws=arrs.map(a=>{
+    const n=new Float64Array(tx*ty),sa=new Float64Array(tx*ty),sb=new Float64Array(tx*ty),saa=new Float64Array(tx*ty),sbb=new Float64Array(tx*ty),sab=new Float64Array(tx*ty);
+    for(let y=0;y<H;y++){
+      const row=Math.floor(y/T)*tx;
+      for(let x=0;x<W;x++){
+        const i=y*W+x;if(a[i*4+3]===0)continue;
+        const t=row+Math.floor(x/T),g=.299*a[i*4]+.587*a[i*4+1]+.114*a[i*4+2],q=og[i];
+        n[t]++;sa[t]+=g;sb[t]+=q;saa[t]+=g*g;sbb[t]+=q*q;sab[t]+=g*q;
+      }
+    }
+    const wt=new Float32Array(tx*ty);
+    for(let t=0;t<wt.length;t++){
+      if(n[t]<T*T*.3)continue;
+      const va=saa[t]-sa[t]*sa[t]/n[t],vb=sbb[t]-sb[t]*sb[t]/n[t];if(va<1e-6||vb<1e-6){wt[t]=1e-3;continue}
+      wt[t]=Math.pow(Math.max(0,(sab[t]-sa[t]*sb[t]/n[t])/Math.sqrt(va*vb)),6)+1e-3;
+    }
+    return wt;
+  });
+  const bil=(wt,x,y)=>{
+    const fx=(x+.5)/T-.5,fy=(y+.5)/T-.5,x0=Math.floor(fx),y0=Math.floor(fy),ax=fx-x0,ay=fy-y0;
+    const g=(xx,yy)=>wt[clamp(yy,0,ty-1)*tx+clamp(xx,0,tx-1)];
+    return (g(x0,y0)*(1-ax)+g(x0+1,y0)*ax)*(1-ay)+(g(x0,y0+1)*(1-ax)+g(x0+1,y0+1)*ax)*ay;
+  };
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    const i=(y*W+x)*4;let r=0,g=0,b=0,sw=0,any=-1;
+    for(let k=0;k<arrs.length;k++){
+      const a=arrs[k];if(a[i+3]===0)continue;
+      any=k;const w=bil(ws[k],x,y);r+=a[i]*w;g+=a[i+1]*w;b+=a[i+2]*w;sw+=w;
+    }
+    if(any<0){o[i+3]=0;continue}
+    if(sw<1e-9){const a=arrs[any];r=a[i];g=a[i+1];b=a[i+2];sw=1}
+    o[i]=r/sw;o[i+1]=g/sw;o[i+2]=b/sw;o[i+3]=255;
+  }
+}
 function fitSearch(L,O,w,h,s0,ds,ns,dstep,nx,ny,cxs,cys){
   let best={sc:-1,s:1,dx:0,dy:0};
   for(let si=-ns;si<=ns;si++){
@@ -790,12 +883,13 @@ function refineH(c,z){
   const c2=fitSearch(L,O,w,h,c1.s,1.008,4,1,3,3,c1.dx,c1.dy);
   const f=c2.sc>=c1.sc?c2:c1,s=f.s;
   const bu=.5*(1-s)+f.dx/w,bv=.5*(1-s)+f.dy/h;
-  return [m[0]*s,0,m[0]*bu+m[2],0,m[4]*s,m[4]*bv+m[5],0,0,1];
+  const Hm=[m[0]*s,0,m[0]*bu+m[2],0,m[4]*s,m[4]*bv+m[5],0,0,1];Hm.sc=f.sc;
+  return Hm;
 }
 $('newFile').addEventListener('change',async e=>{
   const f=e.target.files[0];e.target.value='';if(!f)return;
   try{S.neu=await loadImage(f)}catch{return toast('That file could not be read as an image. Try a JPEG or PNG.')}
-  S.H=h0(S.old.width,S.old.height,S.neu.width,S.neu.height,1);S.res=null;
+  S.H=h0(S.old.width,S.old.height,S.neu.width,S.neu.height,1);S.res=null;S.extra=[];
   go('align');
 });
 
@@ -886,6 +980,7 @@ function warp(){
       o[i+3]=255;
     }
   }
+  if(S.extra&&S.extra.length)combineShots(o,W,H);
   const r=sharedRect(o,W,H),cw=r.r-r.l+1,ch=r.b-r.t+1;
   if(cw<24||ch<24)return null;
   const A=$('cAfter'),B=$('cBefore');
@@ -957,7 +1052,7 @@ $('planeBtn').addEventListener('click',()=>{
   S.showPlane=!S.showPlane;$('planeBtn').setAttribute('aria-pressed',S.showPlane);drawComparePlane();
 });
 $('toAlign').addEventListener('click',()=>go('align'));
-$('toShoot').addEventListener('click',()=>go('shoot'));
+$('toShoot').addEventListener('click',()=>{S.shots=[];S.extra=[];renderTray();go('shoot')});
 
 /* saving: Claude's download prompt inside an artifact, share sheet or plain download elsewhere */
 const dlReady=window.claude&&window.claude.use?window.claude.use('downloads').catch(()=>null):Promise.resolve(null);

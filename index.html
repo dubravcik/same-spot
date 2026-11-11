@@ -103,6 +103,14 @@ input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
 .guide .p-st{left:50%;top:50%;transform:translate(-50%,-50%)}
 .guide .p-sw{left:50%;top:calc(50% + 40px);transform:translate(-50%,-50%);max-width:90%;text-align:center}
 .guide span.big{border-width:3px;font-weight:600}
+
+/* plane: a flat surface marked on the old photo, shown fixed (solid) and as seen live (dashed) */
+.pm{position:absolute;width:44px;height:44px;margin:-22px 0 0 -22px;padding:0;border:0;border-radius:50%;background:none;touch-action:none;cursor:grab;z-index:2}
+.pm:focus-visible{outline:2px solid var(--signal)}
+.nocam .pm,.nocam #plane,.nocam #planeHint{display:none}
+#planeHint{font-size:13px}
+.cmp .pane canvas.plane{position:absolute;inset:0;pointer-events:none}
+.btn[aria-pressed=true]{border-color:var(--signal)}
 .guide span{display:inline-flex;align-items:center;gap:5px;min-height:28px;padding:0 9px;border-radius:14px;background:var(--scrim);border:1px solid var(--signal);font:500 12px var(--mono);letter-spacing:.01em;color:var(--paper);white-space:nowrap}
 .guide span i{font-style:normal;color:var(--signal);font-size:14px;line-height:1}
 .guide span.turn{border-style:dashed}
@@ -188,11 +196,13 @@ input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
       <video id="video" playsinline muted autoplay></video>
       <canvas id="ghost"></canvas>
       <canvas id="edges"></canvas>
+      <canvas id="plane"></canvas>
       <div class="guide" id="guide" role="status" aria-live="polite" hidden></div>
       <p class="note" id="nocam" hidden>Live camera is not available in this view. Take the shot with your phone camera, matching this framing, then line the two up in the next step.</p>
     </div>
   </div>
   <div class="dock">
+    <p class="hint live" id="planeHint">Drag the four numbered rings onto important details of the old photo. A dashed ring shows where that detail is now. Move until it sits in the solid ring.</p>
     <div class="row live">
       <div class="seg" id="ovSeg" role="group" aria-label="Old photo overlay">
         <button type="button" id="ov-ghost" data-ov="ghost" aria-pressed="true">Ghost</button>
@@ -232,8 +242,8 @@ input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
 <section class="step" id="s-compare" hidden>
   <div class="stage" id="cmpStage">
     <div class="cmp" id="cmp" data-mode="slider">
-      <div class="pane after"><canvas id="cAfter"></canvas><span class="tag r">After</span></div>
-      <div class="pane before"><canvas id="cBefore"></canvas><span class="tag">Before</span></div>
+      <div class="pane after"><canvas id="cAfter"></canvas><canvas class="plane" id="pAfter"></canvas><span class="tag r">After</span></div>
+      <div class="pane before"><canvas id="cBefore"></canvas><canvas class="plane" id="pBefore"></canvas><span class="tag">Before</span></div>
       <button type="button" class="handle" id="cmpHandle" role="slider" aria-label="Divider between before and after" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"></button>
     </div>
   </div>
@@ -244,6 +254,7 @@ input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
         <button type="button" id="mode-side" data-mode="side" aria-pressed="false">Side by side</button>
         <button type="button" id="mode-fade" data-mode="fade" aria-pressed="false">Fade</button>
       </div>
+      <button type="button" class="btn" id="planeBtn" aria-pressed="true">Marks</button>
     </div>
     <div class="row" id="fadeRow" hidden>
       <label class="ctl" for="fade"><span>Before to after</span><input type="range" id="fade" min="0" max="100" value="50"></label>
@@ -319,7 +330,8 @@ const mk=(w,h)=>{const c=document.createElement('canvas');c.width=w;c.height=h;r
 const tok=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const rgb=h=>{const n=parseInt(h.slice(1),16);return [n>>16,n>>8&255,n&255]};
 const STEPS=['start','shoot','align','compare'];
-const S={step:'start',old:null,neu:null,H:null,res:null,zoom:1,overlay:'ghost',mode:'slider',stream:null,live:false,noCam:false};
+const PLANE_DEFAULT=[[.3,.35],[.7,.35],[.7,.75],[.3,.75]];
+const S={plane:null,showPlane:true,step:'start',old:null,neu:null,H:null,res:null,zoom:1,overlay:'ghost',mode:'slider',stream:null,live:false,noCam:false};
 
 let toastT;
 function toast(msg){const t=$('toast');t.textContent=msg;t.hidden=false;clearTimeout(toastT);toastT=setTimeout(()=>{t.hidden=true},5000)}
@@ -362,7 +374,24 @@ function go(step){
   if(step==='shoot')enterShoot();else stopCam();
   if(step!=='compare')play(false);
   if(step==='align')enterAlign();
-  if(step==='compare')layoutCmp();
+  if(step==='compare'){layoutCmp();drawComparePlane()}
+}
+// The marked plane drawn on the cropped before and after images (both share old-photo coordinates).
+function drawComparePlane(){
+  ['pBefore','pAfter'].forEach(id=>{
+    const c=$(id);c.hidden=!S.showPlane;if(!S.res||!S.plane)return;
+    c.width=S.res.w;c.height=S.res.h;
+    const g=c.getContext('2d');g.clearRect(0,0,c.width,c.height);if(!S.showPlane)return;
+    const sig=tok('--signal'),r=Math.max(9,S.res.w/60);
+    g.lineWidth=Math.max(2,S.res.w/260);g.strokeStyle=sig;g.fillStyle=sig;
+    g.font='600 '+Math.round(r*1.3)+'px '+tok('--mono');g.textAlign='left';g.textBaseline='alphabetic';
+    S.plane.forEach((p,i)=>{
+      const x=p.x*S.old.width*S.res.f-S.res.l,y=p.y*S.old.height*S.res.f-S.res.t;
+      g.beginPath();g.arc(x,y,r,0,7);g.stroke();
+      g.beginPath();g.arc(x,y,Math.max(1.5,r/8),0,7);g.fill();
+      g.fillText(String(i+1),x+r*1.2,y-r*.7);
+    });
+  });
 }
 document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>go(b.dataset.go)));
 
@@ -371,6 +400,7 @@ $('oldFile').addEventListener('change',async e=>{
   const f=e.target.files[0];e.target.value='';if(!f)return;
   try{S.old=await loadImage(f)}catch{return toast('That file could not be read as an image. Try a JPEG or PNG.')}
   S.neu=null;S.res=null;S.H=null;S.zoom=1;
+  S.plane=PLANE_DEFAULT.map(([x,y])=>({x,y}));planeCur=null;
   const g=$('ghost'),s=Math.min(1,1200/Math.max(S.old.width,S.old.height));
   g.width=Math.round(S.old.width*s);g.height=Math.round(S.old.height*s);
   g.getContext('2d').drawImage(S.old,0,0,g.width,g.height);
@@ -397,9 +427,9 @@ function makeEdges(img,cv){
 }
 
 /* ---------- 2 retake ---------- */
-function layoutVf(){if(S.old)fit($('vfStage'),$('vf'),S.old.width/S.old.height)}
+function layoutVf(){if(S.old){fit($('vfStage'),$('vf'),S.old.width/S.old.height);drawPlane()}}
 function enterShoot(){
-  layoutVf();setZoom(S.zoom);setOverlay(S.overlay);
+  layoutVf();setZoom(S.zoom);setOverlay(S.overlay);placePlane();
   if(S.noCam)setLive(false);else startCam();
 }
 function setLive(on){
@@ -469,7 +499,7 @@ document.addEventListener('visibilitychange',()=>{
    the hint is a direction to try first, and the match score confirms it. */
 const GW=72;
 const gctx=mk(1,1).getContext('2d',{willReadFrequently:true});
-let guideT=0,guideOld=null,guideDim=null,guideSm=null;
+let guideT=0,guideOld=null,guideDim=null,guideSm=null,planeCur=null,planeSm=null;
 function gradMap(src,sx,sy,sw,sh,w,h){
   const c=gctx.canvas;c.width=w;c.height=h;
   gctx.drawImage(src,sx,sy,sw,sh,0,0,w,h);
@@ -481,7 +511,28 @@ function gradMap(src,sx,sy,sw,sh,w,h){
   }
   return m;
 }
-function guideSearch(L,O,w,h,ya,yb){
+// Match the patch around old-photo point (qx,qy) against the live map; the old patch is seen
+// at scale s, so the live patch centre is expected near c+s*(q-c) plus an offset to find.
+function patchSearch(L,O,w,h,qx,qy,s){
+  const cx=(w-1)/2,cy=(h-1)/2,bx=cx+s*(qx-cx),by=cy+s*(qy-cy),hx=5,hy=4;
+  let best={sc:-1,dx:0,dy:0};
+  for(let dy=-10;dy<=10;dy++)for(let dx=-14;dx<=14;dx++){
+    let n=0,sa=0,sb=0,saa=0,sbb=0,sab=0;
+    for(let v=-hy;v<=hy;v++){
+      const y=Math.round(by+dy+v),oy=Math.round(qy+v/s);if(y<0||y>=h||oy<0||oy>=h)continue;
+      for(let u=-hx;u<=hx;u++){
+        const x=Math.round(bx+dx+u),ox=Math.round(qx+u/s);if(x<0||x>=w||ox<0||ox>=w)continue;
+        const a=L[y*w+x],b=O[oy*w+ox];n++;sa+=a;sb+=b;saa+=a*a;sbb+=b*b;sab+=a*b;
+      }
+    }
+    if(n<hx*hy*3)continue;
+    const va=saa-sa*sa/n,vb=sbb-sb*sb/n;if(va<1e-6||vb<1e-6)continue;
+    const sc=(sab-sa*sb/n)/Math.sqrt(va*vb);
+    if(sc>best.sc)best={sc,dx,dy};
+  }
+  return best;
+}
+function guideSearch(L,O,w,h,ya,yb,xa=0,xb=w){
   const cx=(w-1)/2,cy=(h-1)/2;let best={sc:-1,s:1,dx:0,dy:0};
   for(let si=-6;si<=6;si++){
     const s=Math.pow(1.04,si),inv=1/s;
@@ -489,12 +540,12 @@ function guideSearch(L,O,w,h,ya,yb){
       let n=0,sa=0,sb=0,saa=0,sbb=0,sab=0;
       for(let y=ya;y<yb;y++){
         const oy=Math.round(cy+(y-cy-dy)*inv);if(oy<0||oy>=h)continue;
-        for(let x=0;x<w;x++){
+        for(let x=xa;x<xb;x++){
           const ox=Math.round(cx+(x-cx-dx)*inv);if(ox<0||ox>=w)continue;
           const a=L[y*w+x],b=O[oy*w+ox];n++;sa+=a;sb+=b;saa+=a*a;sbb+=b*b;sab+=a*b;
         }
       }
-      if(n<w*(yb-ya)*.45)continue;
+      if(n<(xb-xa)*(yb-ya)*.45)continue;
       const va=saa-sa*sa/n,vb=sbb-sb*sb/n;if(va<1e-6||vb<1e-6)continue;
       const sc=(sab-sa*sb/n)/Math.sqrt(va*vb);
       if(sc>best.sc)best={sc,s,dx,dy};
@@ -524,12 +575,23 @@ function guideTick(){
       let ls=Math.log(ref.s);
       if(Math.abs(ls)>.02){
         const before=S.zoom;
-        setZoom(before+(clamp(before/ref.s,1,5)-before)*.6);
+        setZoom(before+(clamp(before/ref.s,1,5)-before)*.85);
         ls+=Math.log(S.zoom/before);
       }
       m={turn:ref.dx,tilt:ref.dy,fb:ls,lat:0,both:farOk&&nearOk};
       if(m.both){m.fb+=Math.log(near.s/far.s);m.lat=near.dx-far.dx}
     }
+    // Where each marked point appears live: look for that point's patch near where the measured
+    // scale predicts it, and draw a dashed ring there.
+    planeCur=null;
+    if(S.plane&&ref){
+      const s=ref.s;
+      planeCur=S.plane.map(p=>{
+        const r=patchSearch(L,guideOld,w,h,p.x*w-.5,p.y*h-.5,s);
+        return r.sc>=.4?{x:(w/2+s*(p.x*w-w/2)+r.dx)/w,y:(h/2+s*(p.y*h-h/2)+r.dy)/h}:null;
+      });
+    }
+    drawPlane();
     guideSm=m&&guideSm?{turn:.5*(guideSm.turn+m.turn),tilt:.5*(guideSm.tilt+m.tilt),fb:.5*(guideSm.fb+m.fb),lat:.5*(guideSm.lat+m.lat),both:m.both}:m;
     showGuide(guideSm,w);
   }
@@ -559,11 +621,56 @@ function showGuide(g,w){
   el.innerHTML=chips.join('');el.hidden=false;
 }
 function startGuide(){
-  stopGuide();guideOld=null;guideSm=null;
+  stopGuide();guideOld=null;guideSm=null;planeSm=null;
   guideT=setTimeout(guideTick,600);
 }
 function stopGuide(){
-  clearTimeout(guideT);guideT=0;$('guide').hidden=true;
+  clearTimeout(guideT);guideT=0;$('guide').hidden=true;planeCur=null;planeSm=null;drawPlane();
+}
+
+/* ---------- plane: four draggable corners on the viewfinder ---------- */
+const pmarks=[0,1,2,3].map(i=>{
+  const b=document.createElement('button');b.type='button';b.className='pm';
+  b.setAttribute('aria-label','Plane corner '+(i+1)+'. Arrow keys move it.');
+  $('vf').appendChild(b);
+  let on=false;
+  const set=(x,y)=>{S.plane[i]={x:clamp(x,0,1),y:clamp(y,0,1)};planeSm=null;placePlane()};
+  b.addEventListener('pointerdown',e=>{e.preventDefault();b.setPointerCapture(e.pointerId);on=true});
+  b.addEventListener('pointermove',e=>{if(!on)return;const r=$('vf').getBoundingClientRect();set((e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height)});
+  ['pointerup','pointercancel'].forEach(n=>b.addEventListener(n,()=>{on=false}));
+  b.addEventListener('keydown',e=>{
+    const d={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]}[e.key];if(!d)return;
+    e.preventDefault();const k=e.shiftKey?.05:.01;set(S.plane[i].x+d[0]*k,S.plane[i].y+d[1]*k);
+  });
+  return b;
+});
+function placePlane(){
+  if(!S.plane)return;
+  pmarks.forEach((b,i)=>{b.style.left=S.plane[i].x*100+'%';b.style.top=S.plane[i].y*100+'%'});
+  drawPlane();
+}
+function drawPlane(){
+  const c=$('plane'),vf=$('vf'),W=vf.clientWidth,H=vf.clientHeight,dpr=Math.min(2,window.devicePixelRatio||1);
+  if(!W||!H)return;
+  if(c.width!==Math.round(W*dpr)||c.height!==Math.round(H*dpr)){c.width=Math.round(W*dpr);c.height=Math.round(H*dpr)}
+  const g=c.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,H);
+  if(!S.plane||S.step!=='shoot')return;
+  const ring=(x,y,col,dash,fill)=>{
+    g.beginPath();g.arc(x*W,y*H,13,0,7);g.fillStyle=fill;g.fill();g.setLineDash(dash);g.lineWidth=2;g.strokeStyle=col;g.stroke();
+  };
+  const signal=tok('--signal'),paper=tok('--paper');
+  S.plane.forEach((p,i)=>{
+    const c=planeCur&&planeCur[i];
+    if(c){
+      // dashed ring = where this detail is in the live view; the lead shrinks as you move into place
+      g.setLineDash([3,4]);g.lineWidth=1.5;g.strokeStyle='rgba(234,241,246,.7)';
+      g.beginPath();g.moveTo(p.x*W,p.y*H);g.lineTo(c.x*W,c.y*H);g.stroke();
+      ring(c.x,c.y,paper,[5,4],'rgba(234,241,246,.12)');
+    }
+    ring(p.x,p.y,signal,[],'rgba(255,191,46,.14)');
+    g.setLineDash([]);g.fillStyle=signal;g.font='600 12px '+tok('--mono');g.textAlign='center';g.textBaseline='middle';
+    g.fillText(String(i+1),p.x*W,p.y*H+1);
+  });
 }
 
 function setZoom(z){
@@ -591,8 +698,46 @@ $('shutter').addEventListener('click',async()=>{
   c.getContext('2d',{willReadFrequently:true}).drawImage(v,0,0,c.width,c.height);
   const vf=$('vf');vf.classList.remove('flash');void vf.offsetWidth;vf.classList.add('flash');
   S.neu=c;S.H=h0(S.old.width,S.old.height,c.width,c.height,S.zoom);
+  // The zoom may still be easing when the shutter goes, so measure the captured frame against
+  // the old photo once more and fit scale and shift exactly. This is what makes After match Before.
+  $('busy').hidden=false;await new Promise(r=>setTimeout(r,40));
+  try{const rf=refineH(c,S.zoom);if(rf)S.H=rf}catch{}
   if(await build())go('compare');
 });
+function fitSearch(L,O,w,h,s0,ds,ns,dstep,nx,ny,cxs,cys){
+  let best={sc:-1,s:1,dx:0,dy:0};
+  for(let si=-ns;si<=ns;si++){
+    const s=s0*Math.pow(ds,si),inv=1/s;
+    for(let iy=-ny;iy<=ny;iy++)for(let ix=-nx;ix<=nx;ix++){
+      const dx=cxs+ix*dstep,dy=cys+iy*dstep;
+      let n=0,sa=0,sb=0,saa=0,sbb=0,sab=0;
+      for(let y=0;y<h;y++){
+        const oy=Math.round((h-1)/2+(y-(h-1)/2-dy)*inv);if(oy<0||oy>=h)continue;
+        for(let x=0;x<w;x++){
+          const ox=Math.round((w-1)/2+(x-(w-1)/2-dx)*inv);if(ox<0||ox>=w)continue;
+          const a=L[y*w+x],b=O[oy*w+ox];n++;sa+=a;sb+=b;saa+=a*a;sbb+=b*b;sab+=a*b;
+        }
+      }
+      if(n<w*h*.5)continue;
+      const va=saa-sa*sa/n,vb=sbb-sb*sb/n;if(va<1e-6||vb<1e-6)continue;
+      const sc=(sab-sa*sb/n)/Math.sqrt(va*vb);
+      if(sc>best.sc)best={sc,s,dx,dy};
+    }
+  }
+  return best;
+}
+// Fit old photo -> captured frame: the viewfinder framing (h0) corrected by a measured scale and shift.
+function refineH(c,z){
+  const ow=S.old.width,oh=S.old.height,nw=c.width,nh=c.height,w=144,h=Math.max(16,Math.round(w*oh/ow));
+  const m=h0(ow,oh,nw,nh,z),a=applyH(m,0,0),b=applyH(m,1,1);
+  const L=gradMap(c,a[0]*nw,a[1]*nh,(b[0]-a[0])*nw,(b[1]-a[1])*nh,w,h),O=gradMap(S.old,0,0,ow,oh,w,h);
+  const c1=fitSearch(L,O,w,h,1,1.03,8,3,6,4,0,0);
+  if(c1.sc<.3)return null;
+  const c2=fitSearch(L,O,w,h,c1.s,1.008,4,1,3,3,c1.dx,c1.dy);
+  const f=c2.sc>=c1.sc?c2:c1,s=f.s;
+  const bu=.5*(1-s)+f.dx/w,bv=.5*(1-s)+f.dy/h;
+  return [m[0]*s,0,m[0]*bu+m[2],0,m[4]*s,m[4]*bv+m[5],0,0,1];
+}
 $('newFile').addEventListener('change',async e=>{
   const f=e.target.files[0];e.target.value='';if(!f)return;
   try{S.neu=await loadImage(f)}catch{return toast('That file could not be read as an image. Try a JPEG or PNG.')}
@@ -653,7 +798,8 @@ function alignPane(root,name){
 }
 const paneOld=alignPane($('apOld'),'before'),paneNew=alignPane($('apNew'),'after');
 function enterAlign(){
-  const base=[[.22,.22],[.78,.22],[.78,.78],[.22,.78]];
+  // start on the points marked in the retake step; their spot in the new photo comes from the fit
+  const base=S.plane?S.plane.map(p=>[p.x,p.y]):[[.22,.22],[.78,.22],[.78,.78],[.22,.78]];
   paneOld.set(S.old,base.map(([x,y])=>({x:x*S.old.width,y:y*S.old.height})));
   paneNew.set(S.neu,base.map(([x,y])=>{const q=applyH(S.H,x,y);return {x:clamp(q[0],.04,.96)*S.neu.width,y:clamp(q[1],.04,.96)*S.neu.height}}));
 }
@@ -692,7 +838,7 @@ function warp(){
   A.width=B.width=cw;A.height=B.height=ch;
   A.getContext('2d').putImageData(out,-r.l,-r.t);
   B.getContext('2d').drawImage(S.old,r.l/f,r.t/f,cw/f,ch/f,0,0,cw,ch);
-  return {w:cw,h:ch,overlap:cw*ch/(W*H)};
+  return {w:cw,h:ch,overlap:cw*ch/(W*H),l:r.l,t:r.t,f};
 }
 async function build(){
   $('busy').hidden=false;
@@ -753,6 +899,9 @@ function play(on){
   raf=requestAnimationFrame(tick);
 }
 $('playBtn').addEventListener('click',()=>play($('playBtn').getAttribute('aria-pressed')!=='true'));
+$('planeBtn').addEventListener('click',()=>{
+  S.showPlane=!S.showPlane;$('planeBtn').setAttribute('aria-pressed',S.showPlane);drawComparePlane();
+});
 $('toAlign').addEventListener('click',()=>go('align'));
 $('toShoot').addEventListener('click',()=>go('shoot'));
 

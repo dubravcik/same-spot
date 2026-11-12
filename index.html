@@ -567,10 +567,14 @@ const allPts=()=>S.plane?S.plane.concat(S.feats||[]):[];
 
 // Find each point's patch in the live map, searching around the whole view's measured shift
 // (gdx,gdy). That prior is fresh every update, so a point cannot stay locked on a wrong spot.
-function trackAll(L,O,W,H,pts,s,gdx=0,gdy=0){
+function trackAll(L,O,W,H,pts,s,gdx=0,gdy=0,cov=1){
   const cx=(W-1)/2,cy=(H-1)/2;
+  // below 1x zoom the live picture covers only the middle part of the frame; skip points
+  // that would fall outside it or on its edge
+  const lx=(.5-cov/2)*W+10,hx=(.5+cov/2)*W-10,ly=(.5-cov/2)*H+8,hy=(.5+cov/2)*H-8;
   pts.forEach((p,i)=>{
     const qx=p.x*W-.5,qy=p.y*H-.5,bx=cx+s*(qx-cx),by=cy+s*(qy-cy),t=markT[i];
+    if(bx+gdx<lx||bx+gdx>hx||by+gdy<ly||by+gdy>hy){markT[i]=null;return}
     const r=patchSearch(L,O,W,H,qx,qy,s,12,9,7,6,gdx,gdy);
     if(r.sc>=.4){
       const x=(bx+r.dx+.5)/W,y=(by+r.dy+.5)/H;
@@ -787,7 +791,7 @@ function guideTick(){
       const s=ref.s,W2=w*2,H2=h*2;lastS=s;
       if(!guideOld2||guideDim2!==W2+'x'+H2){guideOld2=gradMap(S.old,0,0,S.old.width,S.old.height,W2,H2);guideDim2=W2+'x'+H2}
       const L2=gradMap(v,(vw-cw)/2,(vh-ch)/2,cw,ch,W2,H2);
-      trackAll(L2,guideOld2,W2,H2,pts,s,ref.dx*2,ref.dy*2);lastG=[ref.dx*2,ref.dy*2];
+      trackAll(L2,guideOld2,W2,H2,pts,s,ref.dx*2,ref.dy*2,Math.min(1,S.zoom));lastG=[ref.dx*2,ref.dy*2];
       const an=analyse(pts,W2,H2);
       if(an){
         pMiss=0;const nv=an.vec||[0,0,0],nm=an.mag||0;
@@ -941,7 +945,7 @@ function fitCaptured(c,z){
   const L=gradMap(c,a[0]*c.width,a[1]*c.height,(b[0]-a[0])*c.width,(b[1]-a[1])*c.height,W2,H2);
   const O=gradMap(S.old,0,0,ow,oh,W2,H2);
   const saved=markT;markT=saved.map(t=>t&&{...t,miss:0});
-  let an=null;try{trackAll(L,O,W2,H2,pts,lastS||1,lastG[0],lastG[1]);an=analyse(pts,W2,H2)}finally{markT=saved}
+  let an=null;try{trackAll(L,O,W2,H2,pts,lastS||1,lastG[0],lastG[1],Math.min(1,z));an=analyse(pts,W2,H2)}finally{markT=saved}
   if(!an||an.inl<8)return null;
   return mul3(m,an.H);
 }

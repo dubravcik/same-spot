@@ -616,10 +616,21 @@ function analyse(pts,W,H){
   const out={aim:{x:ctr[0]-.5,y:ctr[1]-.5},inl:bestN,n:c.length,H:best,vec:[0,0,0],mag:0};
   const par=R.filter(r=>r.m>=thr*1.5);
   par.forEach(r=>{if(markT[r.i])markT[r.i].par=true});
-  if(par.length<3)return out;
-  const M=[[0,0,0],[0,0,0],[0,0,0]];
-  par.forEach(r=>{const v=[r.ry/r.m,-r.rx/r.m,(r.rx*r.py-r.ry*r.px)/r.m];for(let i=0;i<3;i++)for(let j=0;j<3;j++)M[i][j]+=v[i]*v[j]});
-  let [a,b,cz]=minEig3(M);
+  // three free parameters fit any three points, so a real pattern needs at least five
+  if(par.length<5)return out;
+  const fit=list=>{
+    const M=[[0,0,0],[0,0,0],[0,0,0]];
+    list.forEach(r=>{const v=[r.ry/r.m,-r.rx/r.m,(r.rx*r.py-r.ry*r.px)/r.m];for(let i=0;i<3;i++)for(let j=0;j<3;j++)M[i][j]+=v[i]*v[j]});
+    return minEig3(M);
+  };
+  // Real parallax all points along one shared pattern; mistracked points do not. Drop drifts
+  // more than ~25 degrees off the fitted pattern, refit, and trust it only if most agree.
+  const agrees=(r,[a,b,cz])=>{const vx=cz*r.px-a,vy=cz*r.py-b,vv=Math.hypot(vx,vy);return vv>1e-9&&Math.abs(r.rx*vx+r.ry*vy)/(r.m*vv)>.9};
+  let sol=fit(par),use=par;
+  for(let k=0;k<2;k++){use=par.filter(r=>agrees(r,sol));if(use.length<3)break;sol=fit(use)}
+  use=par.filter(r=>agrees(r,sol));
+  if(use.length<5||use.length<par.length*.6){par.forEach(r=>{if(markT[r.i])markT[r.i].par=false});return out}
+  let [a,b,cz]=sol;
   // Sign: points off the background plane are taken as nearer, and nearer things sit lower in
   // the frame, so the per-point depth factor should rise toward the bottom.
   const my=R.reduce((s,r)=>s+r.py,0)/R.length;let S1=0,Ks=0;

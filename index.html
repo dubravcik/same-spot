@@ -560,17 +560,16 @@ document.addEventListener('visibilitychange',()=>{
 const GW=72;
 const gctx=mk(1,1).getContext('2d',{willReadFrequently:true});
 let guideT=0,guideOld=null,guideDim=null,guideSm=null,planeCur=null,planeSm=null,markErr=0;
-let guideOld2=null,guideDim2=null,markT=[],markRaf=0,pSm=null,pMiss=0,lastS=1;
+let guideOld2=null,guideDim2=null,markT=[],markRaf=0,pSm=null,pMiss=0,lastS=1,lastG=[0,0];
 const allPts=()=>S.plane?S.plane.concat(S.feats||[]):[];
 
-// Find each point's patch in the live map: near where it was last seen, or in a wide window.
-function trackAll(L,O,W,H,pts,s){
+// Find each point's patch in the live map, searching around the whole view's measured shift
+// (gdx,gdy). That prior is fresh every update, so a point cannot stay locked on a wrong spot.
+function trackAll(L,O,W,H,pts,s,gdx=0,gdy=0){
   const cx=(W-1)/2,cy=(H-1)/2;
   pts.forEach((p,i)=>{
     const qx=p.x*W-.5,qy=p.y*H-.5,bx=cx+s*(qx-cx),by=cy+s*(qy-cy),t=markT[i];
-    let r=null;
-    if(t&&!t.miss){r=patchSearch(L,O,W,H,qx,qy,s,6,6,7,6,t.raw.x*W-.5-bx,t.raw.y*H-.5-by);if(r.sc<.4)r=null}
-    if(!r)r=patchSearch(L,O,W,H,qx,qy,s,28,20,7,6);
+    const r=patchSearch(L,O,W,H,qx,qy,s,12,9,7,6,gdx,gdy);
     if(r.sc>=.4){
       const x=(bx+r.dx+.5)/W,y=(by+r.dy+.5)/H;
       markT[i]={x:t?.5*t.x+.5*x:x,y:t?.5*t.y+.5*y:y,miss:0,raw:{x,y},par:false};
@@ -775,7 +774,7 @@ function guideTick(){
       const s=ref.s,W2=w*2,H2=h*2;lastS=s;
       if(!guideOld2||guideDim2!==W2+'x'+H2){guideOld2=gradMap(S.old,0,0,S.old.width,S.old.height,W2,H2);guideDim2=W2+'x'+H2}
       const L2=gradMap(v,(vw-cw)/2,(vh-ch)/2,cw,ch,W2,H2);
-      trackAll(L2,guideOld2,W2,H2,pts,s);
+      trackAll(L2,guideOld2,W2,H2,pts,s,ref.dx*2,ref.dy*2);lastG=[ref.dx*2,ref.dy*2];
       const an=analyse(pts,W2,H2);
       if(an){
         pMiss=0;const nv=an.vec||[0,0,0],nm=an.mag||0;
@@ -928,7 +927,7 @@ function fitCaptured(c,z){
   const L=gradMap(c,a[0]*c.width,a[1]*c.height,(b[0]-a[0])*c.width,(b[1]-a[1])*c.height,W2,H2);
   const O=gradMap(S.old,0,0,ow,oh,W2,H2);
   const saved=markT;markT=saved.map(t=>t&&{...t,miss:0});
-  let an=null;try{trackAll(L,O,W2,H2,pts,lastS||1);an=analyse(pts,W2,H2)}finally{markT=saved}
+  let an=null;try{trackAll(L,O,W2,H2,pts,lastS||1,lastG[0],lastG[1]);an=analyse(pts,W2,H2)}finally{markT=saved}
   if(!an||an.inl<8)return null;
   return mul3(m,an.H);
 }

@@ -101,6 +101,8 @@ input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
 .guide .p-tu{left:50%;top:0;transform:translateX(-50%)}.guide .p-fw{left:50%;top:34px;transform:translateX(-50%)}
 .guide .p-td{left:50%;bottom:0;transform:translateX(-50%)}.guide .p-bk{left:50%;bottom:34px;transform:translateX(-50%)}
 .guide .p-st{left:50%;top:50%;transform:translate(-50%,-50%)}
+.guide .p-mu{left:50%;top:0;transform:translateX(-50%)}.guide .p-md{left:50%;bottom:0;transform:translateX(-50%)}
+.guide .p-aim{left:0;top:0}
 .guide .p-sw{left:50%;top:calc(50% + 40px);transform:translate(-50%,-50%);max-width:90%;text-align:center}
 .guide span.big{border-width:3px;font-weight:600}
 
@@ -201,7 +203,7 @@ input[type=range]{width:100%;height:28px;margin:0;accent-color:var(--signal)}
     </div>
   </div>
   <div class="dock">
-    <p class="hint live" id="planeHint">The numbered rings sit on distinctive details of the old photo. Drag one to pick a better detail. A dashed ring shows where that detail is now. Move until it sits in the solid ring.</p>
+    <p class="hint live" id="planeHint">Rings and dots follow details of the old photo. Amber dots are nearer or farther than the background, and how they drift tells you where to stand. Turning and tilt are corrected after the shot.</p>
     <div class="row live">
       <div class="seg" id="ovSeg" role="group" aria-label="Old photo overlay">
         <button type="button" id="ov-ghost" data-ov="ghost" aria-pressed="true">Ghost</button>
@@ -399,7 +401,7 @@ $('oldFile').addEventListener('change',async e=>{
   const f=e.target.files[0];e.target.value='';if(!f)return;
   try{S.old=await loadImage(f)}catch{return toast('That file could not be read as an image. Try a JPEG or PNG.')}
   S.neu=null;S.res=null;S.H=null;S.zoom=1;
-  S.plane=autoMarks(S.old);planeCur=null;
+  S.plane=autoMarks(S.old);S.feats=autoFeatures(S.old,S.plane);planeCur=null;
   const g=$('ghost'),s=Math.min(1,1200/Math.max(S.old.width,S.old.height));
   g.width=Math.round(S.old.width*s);g.height=Math.round(S.old.height*s);
   g.getContext('2d').drawImage(S.old,0,0,g.width,g.height);
@@ -433,6 +435,36 @@ function autoMarks(img){
     for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++)if(R[y*w+x]>best){best=R[y*w+x];bx=x;by=y}
     out.push({x:(bx+.5)/w,y:(by+.5)/h});
   });
+  return out;
+}
+
+// About twenty more corners spread on a 5 x 4 grid, skipping flat cells and the four marks.
+function autoFeatures(img,marks){
+  const w=160,h=Math.max(16,Math.round(w*img.height/img.width));
+  const g=mk(w,h).getContext('2d',{willReadFrequently:true});g.drawImage(img,0,0,w,h);
+  const p=g.getImageData(0,0,w,h).data,gr=new Float32Array(w*h);
+  for(let i=0,j=0;i<gr.length;i++,j+=4)gr[i]=.299*p[j]+.587*p[j+1]+.114*p[j+2];
+  const xx=new Float32Array(w*h),yy=new Float32Array(w*h),xy=new Float32Array(w*h);
+  for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
+    const i=y*w+x,dx=gr[i+1]-gr[i-1],dy=gr[i+w]-gr[i-w];xx[i]=dx*dx;yy[i]=dy*dy;xy[i]=dx*dy;
+  }
+  const mx=Math.round(w*.06),my=Math.round(h*.06),R=new Float32Array(w*h);let top=0;
+  for(let y=my;y<h-my;y++)for(let x=mx;x<w-mx;x++){
+    let a=0,b=0,c=0;
+    for(let v=-2;v<=2;v++)for(let u=-2;u<=2;u++){const i=(y+v)*w+x+u;a+=xx[i];b+=yy[i];c+=xy[i]}
+    const r=(a+b)/2-Math.sqrt(((a-b)/2)*((a-b)/2)+c*c);R[y*w+x]=r;if(r>top)top=r;
+  }
+  const out=[],GX=5,GY=4;
+  for(let gy=0;gy<GY;gy++)for(let gx=0;gx<GX;gx++){
+    const x0=Math.max(mx,Math.round(gx*w/GX)),x1=Math.min(w-mx,Math.round((gx+1)*w/GX));
+    const y0=Math.max(my,Math.round(gy*h/GY)),y1=Math.min(h-my,Math.round((gy+1)*h/GY));
+    let best=-1,bx=0,by=0;
+    for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++)if(R[y*w+x]>best){best=R[y*w+x];bx=x;by=y}
+    if(best<top*.02)continue;
+    const q={x:(bx+.5)/w,y:(by+.5)/h};
+    if(marks.some(m=>Math.hypot(m.x-q.x,(m.y-q.y)*h/w)<.04))continue;
+    out.push(q);
+  }
   return out;
 }
 
@@ -528,16 +560,86 @@ document.addEventListener('visibilitychange',()=>{
 const GW=72;
 const gctx=mk(1,1).getContext('2d',{willReadFrequently:true});
 let guideT=0,guideOld=null,guideDim=null,guideSm=null,planeCur=null,planeSm=null,markErr=0;
-let guideOld2=null,guideDim2=null,markT=[null,null,null,null],markRaf=0;
+let guideOld2=null,guideDim2=null,markT=[],markRaf=0,pSm=null,pMiss=0,lastS=1;
+const allPts=()=>S.plane?S.plane.concat(S.feats||[]):[];
+
+// Find each point's patch in the live map: near where it was last seen, or in a wide window.
+function trackAll(L,O,W,H,pts,s){
+  const cx=(W-1)/2,cy=(H-1)/2;
+  pts.forEach((p,i)=>{
+    const qx=p.x*W-.5,qy=p.y*H-.5,bx=cx+s*(qx-cx),by=cy+s*(qy-cy),t=markT[i];
+    let r=null;
+    if(t&&!t.miss){r=patchSearch(L,O,W,H,qx,qy,s,6,6,7,6,t.raw.x*W-.5-bx,t.raw.y*H-.5-by);if(r.sc<.4)r=null}
+    if(!r)r=patchSearch(L,O,W,H,qx,qy,s,28,20,7,6);
+    if(r.sc>=.4){
+      const x=(bx+r.dx+.5)/W,y=(by+r.dy+.5)/H;
+      markT[i]={x:t?.5*t.x+.5*x:x,y:t?.5*t.y+.5*y:y,miss:0,raw:{x,y},par:false};
+    }else if(t&&++t.miss>3)markT[i]=null;
+  });
+}
+// Smallest-eigenvalue eigenvector of a symmetric 3x3 matrix (Jacobi rotations).
+function minEig3(A){
+  const a=A.map(r=>r.slice()),V=[[1,0,0],[0,1,0],[0,0,1]];
+  for(let sw=0;sw<30;sw++)for(let p=0;p<2;p++)for(let q=p+1;q<3;q++){
+    if(Math.abs(a[p][q])<1e-12)continue;
+    const th=(a[q][q]-a[p][p])/(2*a[p][q]),t=(th>=0?1:-1)/(Math.abs(th)+Math.sqrt(th*th+1)),c=1/Math.sqrt(t*t+1),s=t*c;
+    for(let k=0;k<3;k++){const kp=a[k][p],kq=a[k][q];a[k][p]=c*kp-s*kq;a[k][q]=s*kp+c*kq}
+    for(let k=0;k<3;k++){const pk=a[p][k],qk=a[q][k];a[p][k]=c*pk-s*qk;a[q][k]=s*pk+c*qk}
+    for(let k=0;k<3;k++){const kp=V[k][p],kq=V[k][q];V[k][p]=c*kp-s*kq;V[k][q]=s*kp+c*kq}
+  }
+  let m=0;for(let i=1;i<3;i++)if(a[i][i]<a[m][m])m=i;
+  return [V[0][m],V[1][m],V[2][m]];
+}
+// Plane plus parallax. Turning, tilting and zooming move every point by one homography, which
+// a crop and warp can undo. RANSAC finds that homography (it fits the background). What is left
+// on the other points is parallax, which only a change of position causes. For a camera moved by
+// d=(dx,dy,dz), a point nearer than the background drifts along c*p-(a,b) with (a,b,c)=(f*dx,f*dy,dz),
+// p measured from the centre. Fitting that direction to all drifts gives where the camera went.
+function analyse(pts,W,H){
+  const c=[];
+  pts.forEach((p,i)=>{const t=markT[i];if(t&&!t.miss)c.push({i,o:{x:p.x,y:p.y},l:t.raw})});
+  if(c.length<8)return null;
+  const thr=1.2;let best=null,bestN=-1,bestE=1e9;
+  for(let it=0;it<80;it++){
+    const idx=[];while(idx.length<4){const k=Math.floor(Math.random()*c.length);if(!idx.includes(k))idx.push(k)}
+    const Hm=solveH(idx.map(k=>c[k].o),idx.map(k=>c[k].l));if(!Hm||!Hm.every(Number.isFinite))continue;
+    let n=0,e=0;
+    c.forEach(q=>{const a=applyH(Hm,q.o.x,q.o.y);if(a[2]<=0)return;const d=Math.hypot((a[0]-q.l.x)*W,(a[1]-q.l.y)*H);if(d<thr){n++;e+=d}});
+    if(n>bestN||(n===bestN&&e<bestE)){best=Hm;bestN=n;bestE=e}
+  }
+  if(!best||bestN<4)return null;
+  const R=c.map(q=>{
+    const a=applyH(best,q.o.x,q.o.y),rx=(q.l.x-a[0])*W,ry=(q.l.y-a[1])*H;
+    return {i:q.i,rx,ry,px:(q.l.x-.5)*W,py:(q.l.y-.5)*H,m:Math.hypot(rx,ry)};
+  });
+  const ctr=applyH(best,.5,.5);
+  const out={aim:{x:ctr[0]-.5,y:ctr[1]-.5},inl:bestN,n:c.length,H:best,vec:[0,0,0],mag:0};
+  const par=R.filter(r=>r.m>=thr*1.5);
+  par.forEach(r=>{if(markT[r.i])markT[r.i].par=true});
+  if(par.length<3)return out;
+  const M=[[0,0,0],[0,0,0],[0,0,0]];
+  par.forEach(r=>{const v=[r.ry/r.m,-r.rx/r.m,(r.rx*r.py-r.ry*r.px)/r.m];for(let i=0;i<3;i++)for(let j=0;j<3;j++)M[i][j]+=v[i]*v[j]});
+  let [a,b,cz]=minEig3(M);
+  // Sign: points off the background plane are taken as nearer, and nearer things sit lower in
+  // the frame, so the per-point depth factor should rise toward the bottom.
+  const my=R.reduce((s,r)=>s+r.py,0)/R.length;let S1=0,Ks=0;
+  R.forEach(r=>{const vx=cz*r.px-a,vy=cz*r.py-b,vv=vx*vx+vy*vy;if(vv<1e-9)return;const k=(r.rx*vx+r.ry*vy)/vv;S1+=k*(r.py-my);Ks+=k});
+  if(S1<0||(Math.abs(S1)<1e-6&&Ks<0)){a=-a;b=-b;cz=-cz}
+  const v=[a,b,cz*W*.35],n=Math.hypot(v[0],v[1],v[2])||1;
+  out.vec=v.map(x=>x/n);
+  const ms=par.map(r=>r.m).sort((x,y)=>x-y);out.mag=ms[ms.length>>1]/W;
+  return out;
+}
 // Rings glide toward the latest tracked position every frame and fade in and out,
 // so they move smoothly even though tracking updates only a few times a second.
 function animMarks(){
-  if(!planeCur)planeCur=[null,null,null,null];
-  for(let i=0;i<4;i++){
+  const N=allPts().length;
+  if(!planeCur||planeCur.length!==N)planeCur=new Array(N).fill(null);
+  for(let i=0;i<N;i++){
     const t=markT[i];
     if(t){
       if(!planeCur[i])planeCur[i]={x:t.x,y:t.y,a:0};
-      const q=planeCur[i];q.x+=(t.x-q.x)*.18;q.y+=(t.y-q.y)*.18;q.a+=(1-q.a)*.15;
+      const q=planeCur[i];q.x+=(t.x-q.x)*.18;q.y+=(t.y-q.y)*.18;q.a+=(1-q.a)*.15;q.par=t.par;
     }else if(planeCur[i]){planeCur[i].a*=.85;if(planeCur[i].a<.03)planeCur[i]=null}
   }
   drawPlane();markRaf=requestAnimationFrame(animMarks);
@@ -555,7 +657,7 @@ function gradMap(src,sx,sy,sw,sh,w,h){
 }
 // Match the patch around old-photo point (qx,qy) against the live map; the old patch is seen
 // at scale s, so the live patch centre is expected near c+s*(q-c) plus an offset to find.
-function patchSearch(L,O,w,h,qx,qy,s,R=14,RY=10,hx=5,hy=4){
+function patchSearch(L,O,w,h,qx,qy,s,R=14,RY=10,hx=5,hy=4,dx0=0,dy0=0){
   const cx=(w-1)/2,cy=(h-1)/2,bx=cx+s*(qx-cx),by=cy+s*(qy-cy);
   const score=(dx,dy)=>{
     let n=0,sa=0,sb=0,saa=0,sbb=0,sab=0;
@@ -571,7 +673,8 @@ function patchSearch(L,O,w,h,qx,qy,s,R=14,RY=10,hx=5,hy=4){
     return (sab-sa*sb/n)/Math.sqrt(va*vb);
   };
   let best={sc:-1,dx:0,dy:0};
-  for(let dy=-RY;dy<=RY;dy++)for(let dx=-R;dx<=R;dx++){
+  const ox=Math.round(dx0),oy=Math.round(dy0);
+  for(let dy=oy-RY;dy<=oy+RY;dy++)for(let dx=ox-R;dx<=ox+R;dx++){
     const sc=score(dx,dy);if(sc>best.sc)best={sc,dx,dy};
   }
   if(best.sc>0){
@@ -654,23 +757,20 @@ function guideTick(){
     }
     // Where each marked point appears live: look for that point's patch near where the measured
     // scale predicts it, and draw a dashed ring there.
-    // Tracked on a map twice as fine as the hints, to sub-pixel accuracy. Each new position is
-    // averaged with the last one, and a mark survives three missed reads before it fades out.
-    if(S.plane&&ref){
-      const s=ref.s,W2=w*2,H2=h*2;
+    // Track the four marks plus the automatic features on a map twice as fine as the hints,
+    // then split their drift into what turning explains and what only moving explains.
+    const pts=allPts();
+    if(pts.length&&ref){
+      const s=ref.s,W2=w*2,H2=h*2;lastS=s;
       if(!guideOld2||guideDim2!==W2+'x'+H2){guideOld2=gradMap(S.old,0,0,S.old.width,S.old.height,W2,H2);guideDim2=W2+'x'+H2}
       const L2=gradMap(v,(vw-cw)/2,(vh-ch)/2,cw,ch,W2,H2);
-      S.plane.forEach((p,i)=>{
-        const r=patchSearch(L2,guideOld2,W2,H2,p.x*W2-.5,p.y*H2-.5,s,28,20,7,6),t=markT[i];
-        if(r.sc>=.4){
-          const x=(W2/2+s*(p.x*W2-W2/2)+r.dx)/W2,y=(H2/2+s*(p.y*H2-H2/2)+r.dy)/H2;
-          markT[i]=t?{x:.5*t.x+.5*x,y:.5*t.y+.5*y,miss:0}:{x,y,miss:0};
-        }else if(t&&++t.miss>3)markT[i]=null;
-      });
-    }else markT=[null,null,null,null];
-    // how far the live rings are from the solid ones, as a fraction of the width
-    markErr=0;
-    S.plane&&S.plane.forEach((p,i)=>{const c=markT[i];if(c)markErr=Math.max(markErr,Math.hypot((c.x-p.x)*w,(c.y-p.y)*h)/w)});
+      trackAll(L2,guideOld2,W2,H2,pts,s);
+      const an=analyse(pts,W2,H2);
+      if(an){
+        pMiss=0;const nv=an.vec||[0,0,0],nm=an.mag||0;
+        pSm=pSm?{v:pSm.v.map((x,i)=>.6*x+.4*nv[i]),mag:.6*pSm.mag+.4*nm,aim:{x:.6*pSm.aim.x+.4*an.aim.x,y:.6*pSm.aim.y+.4*an.aim.y}}:{v:nv,mag:nm,aim:an.aim};
+      }else if(pSm&&++pMiss>4)pSm=null;
+    }else{markT=[];pSm=null}
     guideSm=m&&guideSm?{turn:.5*(guideSm.turn+m.turn),tilt:.5*(guideSm.tilt+m.tilt),fb:.5*(guideSm.fb+m.fb),lat:.5*(guideSm.lat+m.lat),both:m.both}:m;
     showGuide(guideSm,w);
   }
@@ -682,7 +782,21 @@ function showGuide(g,w){
   // dashed chips on the outer edge. Position (move your feet): solid chips just inside them.
   // A thick outline means a big correction.
   const add=(pos,arrow,text,cls,isBig)=>chips.push('<span class="p-'+pos+' '+cls+(isBig?' big':'')+'"><i>'+arrow+'</i>'+text+'</span>');
-  if(!g){add('st','…','Searching. Point at the old scene.','wait')}
+  const P=pSm;
+  if(!g&&!P){add('st','…','Searching. Point at the old scene.','wait')}
+  else if(P){
+    // Position first: only moving fixes parallax. Aim is corrected after the shot, so it is
+    // shown only when the frame is far off.
+    const v=P.v,mx=Math.max(Math.abs(v[0]),Math.abs(v[1]),Math.abs(v[2]))||1,on=P.mag>.012,big=P.mag>.04,k=x=>on&&Math.abs(x)/mx>=.4;
+    if(k(v[0]))add(v[0]>0?'ml':'mr',v[0]>0?'←':'→',v[0]>0?'Move left':'Move right','move',big);
+    if(k(v[1]))add(v[1]>0?'mu':'md',v[1]>0?'↑':'↓',v[1]>0?'Move up':'Move down','move',big);
+    if(k(v[2]))add(v[2]>0?'bk':'fw',v[2]>0?'↓':'↑',v[2]>0?'Step back':'Step forward','move',big);
+    const aims=[];
+    if(Math.abs(P.aim.x)>.15)aims.push(P.aim.x>0?'right':'left');
+    if(Math.abs(P.aim.y)>.15)aims.push(P.aim.y>0?'down':'up');
+    if(aims.length)add('aim','↻','Aim '+aims.join(' and '),'turn',false);
+    if(!chips.length)add('st','✓','In position. Shoot.','ok');
+  }
   else{
     const thr=w*.025,big=w*.15,a=v=>Math.abs(v);
     if(g.turn>thr)add('tr','▶','Turn right','turn',a(g.turn)>big);
@@ -693,20 +807,19 @@ function showGuide(g,w){
     else if(g.lat<-thr)add('ml','←','Move left','move',a(g.lat)>big);
     if(g.fb>.06)add('bk','↓','Step back','move',g.fb>.2);
     else if(g.fb<-.06)add('fw','↑','Step forward','move',g.fb<-.2);
-    if(!chips.length&&markErr>.03)add('st','◎','Almost. Line up the rings.','wait');
-    else if(!chips.length&&g.both)add('st','✓','In position. Shoot.','ok');
+    if(!chips.length&&g.both)add('st','✓','In position. Shoot.','ok');
     else if(!chips.length)add('st','✓','Aimed. Position unchecked.','ok');
     if(!g.both)add('sw','…','Need foreground detail to check position','wait');
   }
   el.innerHTML=chips.join('');el.hidden=false;
 }
 function startGuide(){
-  stopGuide();guideOld=null;guideOld2=null;guideSm=null;planeSm=null;
+  stopGuide();guideOld=null;guideOld2=null;guideSm=null;planeSm=null;pSm=null;
   guideT=setTimeout(guideTick,600);markRaf=requestAnimationFrame(animMarks);
 }
 function stopGuide(){
   clearTimeout(guideT);guideT=0;cancelAnimationFrame(markRaf);markRaf=0;$('guide').hidden=true;
-  markT=[null,null,null,null];planeCur=null;planeSm=null;drawPlane();
+  markT=[];planeCur=null;planeSm=null;pSm=null;drawPlane();
 }
 
 /* ---------- plane: four draggable corners on the viewfinder ---------- */
@@ -754,6 +867,12 @@ function drawPlane(){
     g.setLineDash([]);g.fillStyle=signal;g.font='600 12px '+tok('--mono');g.textAlign='center';g.textBaseline='middle';
     g.fillText(String(i+1),p.x*W,p.y*H+1);
   });
+  // automatic features: pale dots, amber where a detail is nearer or farther than the background
+  if(planeCur)for(let i=4;i<planeCur.length;i++){
+    const c=planeCur[i];if(!c)continue;
+    g.globalAlpha=c.a==null?1:c.a;g.beginPath();g.arc(c.x*W,c.y*H,c.par?4:2.5,0,7);
+    g.fillStyle=c.par?signal:'rgba(234,241,246,.75)';g.fill();g.globalAlpha=1;
+  }
 }
 
 function setZoom(z){
@@ -784,9 +903,24 @@ $('shutter').addEventListener('click',async()=>{
   // the old photo once more and fit scale and shift exactly. This is what makes After match Before.
   S.neu=c;S.H=h0(S.old.width,S.old.height,c.width,c.height,S.zoom);
   $('busy').hidden=false;await new Promise(r=>setTimeout(r,40));
-  try{const rf=refineH(c,S.zoom);if(rf)S.H=rf}catch{}
+  try{const fh=fitCaptured(c,S.zoom);if(fh)S.H=fh;else{const rf=refineH(c,S.zoom);if(rf)S.H=rf}}catch{}
   if(await build())go('compare');
 });
+const mul3=(A,B)=>[0,1,2].flatMap(r=>[0,1,2].map(k=>A[r*3]*B[k]+A[r*3+1]*B[3+k]+A[r*3+2]*B[6+k]));
+// Full perspective fit for the shot: track the points on the captured frame, take the background
+// homography (old photo -> viewfinder), then map viewfinder -> captured frame. Aim and tilt are
+// corrected by this warp; only position (parallax) stays.
+function fitCaptured(c,z){
+  const pts=allPts();if(pts.length<8)return null;
+  const ow=S.old.width,oh=S.old.height,W2=144,H2=Math.max(16,Math.round(W2*oh/ow));
+  const m=h0(ow,oh,c.width,c.height,z),a=applyH(m,0,0),b=applyH(m,1,1);
+  const L=gradMap(c,a[0]*c.width,a[1]*c.height,(b[0]-a[0])*c.width,(b[1]-a[1])*c.height,W2,H2);
+  const O=gradMap(S.old,0,0,ow,oh,W2,H2);
+  const saved=markT;markT=saved.map(t=>t&&{...t,miss:0});
+  let an=null;try{trackAll(L,O,W2,H2,pts,lastS||1);an=analyse(pts,W2,H2)}finally{markT=saved}
+  if(!an||an.inl<8)return null;
+  return mul3(m,an.H);
+}
 function fitSearch(L,O,w,h,s0,ds,ns,dstep,nx,ny,cxs,cys){
   let best={sc:-1,s:1,dx:0,dy:0};
   for(let si=-ns;si<=ns;si++){

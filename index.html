@@ -946,7 +946,8 @@ function fitCaptured(c,z){
   const O=gradMap(S.old,0,0,ow,oh,W2,H2);
   const saved=markT;markT=saved.map(t=>t&&{...t,miss:0});
   let an=null;try{trackAll(L,O,W2,H2,pts,lastS||1,lastG[0],lastG[1],Math.min(1,z));an=analyse(pts,W2,H2)}finally{markT=saved}
-  if(!an||an.inl<8)return null;
+  // a perspective fit needs plenty of agreeing points; otherwise the scale-and-shift fit is safer
+  if(!an||an.inl<12)return null;
   return mul3(m,an.H);
 }
 function fitSearch(L,O,w,h,s0,ds,ns,dstep,nx,ny,cxs,cys){

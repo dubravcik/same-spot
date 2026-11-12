@@ -400,7 +400,7 @@ document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=
 $('oldFile').addEventListener('change',async e=>{
   const f=e.target.files[0];e.target.value='';if(!f)return;
   try{S.old=await loadImage(f)}catch{return toast('That file could not be read as an image. Try a JPEG or PNG.')}
-  S.neu=null;S.res=null;S.H=null;S.zoom=1;
+  S.neu=null;S.res=null;S.H=null;S.zoom=1;S.lensTried=false;
   S.plane=autoMarks(S.old);S.feats=autoFeatures(S.old,S.plane);planeCur=null;
   const g=$('ghost'),s=Math.min(1,1200/Math.max(S.old.width,S.old.height));
   g.width=Math.round(S.old.width*s);g.height=Math.round(S.old.height*s);
@@ -429,8 +429,10 @@ function autoMarks(img){
   const out=[];
   // order: top left, top right, bottom right, bottom left
   [[0,0],[1,0],[1,1],[0,1]].forEach(([qx,qy])=>{
-    const x0=Math.max(mx,Math.round(qx*w/2)),x1=Math.min(w-mx,Math.round((qx+1)*w/2));
-    const y0=Math.max(my,Math.round(qy*h/2)),y1=Math.min(h-my,Math.round((qy+1)*h/2));
+    // keep out of a central band so the four marks spread toward the corners
+    const ix=Math.round(w*.12),iy=Math.round(h*.12);
+    const x0=Math.max(mx,Math.round(qx*w/2)+(qx?ix:0)),x1=Math.min(w-mx,Math.round((qx+1)*w/2)-(qx?0:ix));
+    const y0=Math.max(my,Math.round(qy*h/2)+(qy?iy:0)),y1=Math.min(h-my,Math.round((qy+1)*h/2)-(qy?0:iy));
     let best=-1,bx=(x0+x1)/2,by=(y0+y1)/2;
     for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++)if(R[y*w+x]>best){best=R[y*w+x];bx=x;by=y}
     out.push({x:(bx+.5)/w,y:(by+.5)/h});
@@ -656,7 +658,12 @@ function animMarks(){
 }
 function gradMap(src,sx,sy,sw,sh,w,h){
   const c=gctx.canvas;c.width=w;c.height=h;
-  gctx.drawImage(src,sx,sy,sw,sh,0,0,w,h);
+  // the requested rectangle can reach past the frame (zoom below 1x): draw only the part that
+  // exists, in its place, and leave the rest black
+  gctx.fillStyle='#000';gctx.fillRect(0,0,w,h);
+  const SW=src.videoWidth||src.width,SH=src.videoHeight||src.height;
+  const x0=Math.max(0,sx),y0=Math.max(0,sy),x1=Math.min(SW,sx+sw),y1=Math.min(SH,sy+sh);
+  if(x1>x0&&y1>y0)gctx.drawImage(src,x0,y0,x1-x0,y1-y0,(x0-sx)/sw*w,(y0-sy)/sh*h,(x1-x0)/sw*w,(y1-y0)/sh*h);
   const p=gctx.getImageData(0,0,w,h).data,gr=new Float32Array(w*h),m=new Float32Array(w*h);
   for(let i=0,j=0;i<gr.length;i++,j+=4)gr[i]=.299*p[j]+.587*p[j+1]+.114*p[j+2];
   for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
@@ -759,8 +766,14 @@ function guideTick(){
       let ls=Math.log(ref.s);
       if(Math.abs(ls)>.02){
         const before=S.zoom;
-        setZoom(before+(clamp(before/ref.s,1,5)-before)*.85);
+        setZoom(before+(clamp(before/ref.s,.3,5)-before)*.85);
         ls+=Math.log(S.zoom/before);
+      }
+      // The old photo is wider than this lens: switch once to the Ultra Wide lens if there is one.
+      if(S.zoom<.8&&!S.lensTried){
+        const sel=$('lens'),o=[...sel.options].find(o=>/ultra/i.test(o.textContent));
+        S.lensTried=true;
+        if(o&&o.value!==sel.value){sel.value=o.value;toast('The old photo is wider than this lens. Switched to the Ultra Wide lens.');startCam(o.value);return}
       }
       m={turn:ref.dx,tilt:ref.dy,fb:ls,lat:0,both:farOk&&nearOk};
       if(m.both){m.fb+=Math.log(near.s/far.s);m.lat=near.dx-far.dx}
@@ -886,7 +899,8 @@ function drawPlane(){
 }
 
 function setZoom(z){
-  S.zoom=clamp(z,1,5);
+  // below 1x the live picture shrinks inside the old photo's frame: the old photo is wider than this lens
+  S.zoom=clamp(z,.3,5);
   $('video').style.transform='scale('+S.zoom+')';
   $('zoomOut').textContent=S.zoom.toFixed(1)+'×';
 }
